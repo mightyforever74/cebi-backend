@@ -1,0 +1,13 @@
+
+# secrets and backups
+.env
+.env.*
+*.pem
+*.key
+*.bak
+*.backup
+*.sql
+*.sql.gz
+logs/
+npm-debug.log*
+node_modules/
