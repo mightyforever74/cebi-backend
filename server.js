@@ -6518,6 +6518,138 @@ fastify.get(
   }
 );
 
+// ── GET /api/driver/drive-conditions ──────────────────────
+// Aggregation endpoint: traffic + weather tek seferde
+// Koordinatlar bir kez resolve edilir, iki bloğa paylastirilir
+fastify.get('/api/driver/drive-conditions', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  try {
+    const coords = await getDriverRouteCoords(fastify, request.user.id);
+
+    const [trafficResult, weatherResult] = await Promise.allSettled([
+
+      (async () => {
+        const HERE_KEY = process.env.HERE_API_KEY;
+        if (!HERE_KEY) return { traffic: null, reason: 'NOT_CONFIGURED' };
+        if (!coords) return { traffic: null, reason: 'NO_ACTIVE_TASK' };
+
+        const cacheKey =
+          'traffic_' +
+          Math.round(coords.originLat * 100) + '_' +
+          Math.round(coords.originLon * 100) + '_' +
+          Math.round(coords.destLat   * 100) + '_' +
+          Math.round(coords.destLon   * 100);
+
+        const cached = cacheGet(cacheKey);
+        if (cached) return cached;
+
+        const url =
+          'https://router.hereapi.com/v8/routes?transportMode=truck' +
+          '&origin='      + coords.originLat + ',' + coords.originLon +
+          '&destination=' + coords.destLat   + ',' + coords.destLon +
+          '&return=summary,incidents&apiKey=' + HERE_KEY;
+
+        const res  = await fetch(url);
+        const data = await res.json();
+        const section  = data?.routes?.[0]?.sections?.[0];
+        const summary  = section?.summary;
+        const baseDur  = summary?.baseDuration || 0;
+        const dur      = summary?.duration     || 0;
+        const delayMin = Math.max(0, Math.round((dur - baseDur) / 60));
+
+        let statusIcon, statusLabel;
+        if (delayMin === 0)     { statusIcon = 'OK';   statusLabel = 'Akici';      }
+        else if (delayMin < 10) { statusIcon = 'WARN'; statusLabel = 'Orta Yogun'; }
+        else                    { statusIcon = 'CRIT'; statusLabel = 'Yogun';      }
+
+        const incidents = (section?.incidents || []).slice(0, 2)
+          .map(i => i.description?.value || i.type || 'Trafik olayi');
+
+        const result = { traffic: { status_icon: statusIcon, status_label: statusLabel, delay_min: delayMin, duration_min: Math.round(dur / 60), route_label: coords.routeLabel, incidents } };
+        cacheSet(cacheKey, result);
+        return result;
+      })(),
+
+      (async () => {
+        const OWM_KEY = process.env.OPENWEATHER_API_KEY;
+        if (!OWM_KEY) return { weather: null, reason: 'NOT_CONFIGURED' };
+
+        let lat, lon;
+        if (coords) {
+          lat = ((coords.originLat + coords.destLat) / 2).toFixed(4);
+          lon = ((coords.originLon + coords.destLon) / 2).toFixed(4);
+        } else {
+          const client = await fastify.pg.connect();
+          try {
+            const { rows: dr } = await client.query('SELECT id FROM drivers WHERE user_id = $1', [request.user.id]);
+            if (!dr.length) return { weather: null, reason: 'NO_DRIVER' };
+            const { rows: drv } = await client.query('SELECT assigned_vehicle_id FROM drivers WHERE id = $1', [dr[0].id]);
+            if (!drv.length || !drv[0].assigned_vehicle_id) return { weather: null, reason: 'NO_VEHICLE' };
+            const { rows: loc } = await client.query(
+              'SELECT latitude, longitude FROM locations WHERE device_id = (SELECT esp32_device_id FROM vehicles WHERE id = $1) ORDER BY time DESC LIMIT 1',
+              [drv[0].assigned_vehicle_id]
+            );
+            if (!loc.length || loc[0].latitude == null || loc[0].longitude == null) return { weather: null, reason: 'NO_LOCATION' };
+            lat = loc[0].latitude; lon = loc[0].longitude;
+          } finally { client.release(); }
+        }
+
+        const cacheKey = 'weather_' + Math.round(lat * 10) + '_' + Math.round(lon * 10);
+        const cached = cacheGet(cacheKey);
+        if (cached) return cached;
+
+        const url =
+          'https://api.openweathermap.org/data/2.5/weather?lat=' + lat + '&lon=' + lon +
+          '&units=metric&lang=en&appid=' + OWM_KEY;
+
+        const res  = await fetch(url);
+        const data = await res.json();
+
+        if (data.cod && data.cod !== 200 && String(data.cod) !== '200')
+          return { weather: null, reason: 'API_ERROR', detail: data.message };
+
+        const code    = data.weather?.[0]?.id || 800;
+        const tempC   = Math.round(data.main?.temp || 0);
+        const windKmh = Math.round((data.wind?.speed || 0) * 3.6);
+        const desc    = data.weather?.[0]?.description || '';
+
+        let icon;
+        if      (code >= 200 && code < 300) icon = 'storm';
+        else if (code >= 300 && code < 400) icon = 'drizzle';
+        else if (code >= 500 && code < 600) icon = 'rain';
+        else if (code >= 600 && code < 700) icon = 'snow';
+        else if (code >= 700 && code < 800) icon = 'fog';
+        else if (code === 800)              icon = 'clear';
+        else                                icon = 'cloudy';
+
+        let alertText = null;
+        if      (code >= 200 && code < 300) alertText = 'Storm warning';
+        else if (code >= 600 && code < 700) alertText = 'Snow/ice risk';
+        else if (tempC <= 2)                alertText = 'Black ice risk';
+        else if (windKmh > 60)              alertText = 'Strong crosswind';
+
+        const result = { weather: { icon, temp_c: tempC, description: desc, wind_kmh: windKmh, alert: alertText, has_active_task: !!coords } };
+        cacheSet(cacheKey, result);
+        return result;
+      })(),
+    ]);
+
+    const traffic = trafficResult.status === 'fulfilled' ? trafficResult.value : {};
+    const weather = weatherResult.status === 'fulfilled' ? weatherResult.value : {};
+
+    return reply.send({
+      traffic:        traffic.traffic || null,
+      weather:        weather.weather || null,
+      traffic_reason: traffic.reason  || null,
+      weather_reason: weather.reason  || null,
+    });
+
+  } catch (err) {
+    request.log.error({ err }, 'drive-conditions error');
+    return reply.send({ traffic: null, weather: null, reason: 'SERVER_ERROR' });
+  }
+});
+
+
 const start = async () => {
   try {
 
