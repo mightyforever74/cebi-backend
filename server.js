@@ -6468,7 +6468,7 @@ fastify.get(
       const res = await fetch(url);
       const data = await res.json();
 
-      if (data.cod)
+      if (data.cod && data.cod !== 200 && String(data.cod) !== "200")
         return reply.send({
           weather: null,
           reason: "API_ERROR",
