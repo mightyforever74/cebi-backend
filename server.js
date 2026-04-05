@@ -1221,7 +1221,15 @@ fastify.get('/api/driver/stats', { preHandler: [fastify.authenticate] }, async (
     const { rows: taskStats } = await client.query(`
       SELECT
         COUNT(*) FILTER (WHERE status = 'completed')::int AS completed_tasks,
-        COUNT(*) FILTER (WHERE status IN ('pending', 'in_progress'))::int AS active_tasks
+        COUNT(*) FILTER (WHERE status IN ('pending', 'in_progress'))::int AS active_tasks,
+        COALESCE(SUM(actual_distance_km) FILTER (
+          WHERE status = 'completed'
+          AND DATE(actual_end) = CURRENT_DATE
+        ), 0)::numeric AS today_km,
+        COALESCE(SUM(actual_distance_km) FILTER (
+          WHERE status = 'completed'
+          AND actual_end >= DATE_TRUNC('month', CURRENT_DATE)
+        ), 0)::numeric AS month_km
       FROM tasks 
       WHERE driver_id = $1 AND company_id = $2
     `, [driverId, driverCompanyId]);
@@ -1229,7 +1237,8 @@ fastify.get('/api/driver/stats', { preHandler: [fastify.authenticate] }, async (
     const stats = {
       completed_tasks: taskStats[0]?.completed_tasks || 0,
       active_tasks: taskStats[0]?.active_tasks || 0,
-      total_km: parseFloat(driver.total_km_driven) || 0,
+      today_km: parseFloat(taskStats[0]?.today_km) || 0,
+      month_km: parseFloat(taskStats[0]?.month_km) || 0,
       safety_score: parseFloat(driver.safety_score) || 5.0,
       fuel_efficiency: 0,
     };
