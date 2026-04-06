@@ -1628,6 +1628,21 @@ fastify.put(
         (typeof task.id === "string" ? task.id.slice(0, 8) : String(task.id));
 
       // Task status güncelle
+      // in_progress gecisinde: baska aktif gorev var mi kontrol et
+      if (status === "in_progress") {
+        const { rows: activeRows } = await client.query(
+          `SELECT id FROM tasks WHERE driver_id = $1 AND status = 'in_progress' AND id != $2`,
+          [driverId, id]
+        );
+        if (activeRows.length > 0) {
+          return reply.code(409).send({
+            error: "TASK_CONFLICT",
+            message: "Zaten devam eden bir gorev var. Once mevcut gorevi tamamlayin.",
+            active_task_id: activeRows[0].id,
+          });
+        }
+      }
+
       const updateFields = ["status = $1", "updated_at = CURRENT_TIMESTAMP"];
       const params = [status];
 
@@ -1651,6 +1666,12 @@ fastify.put(
       return { locations: rows };
     } catch (error) {
       await client.query("ROLLBACK");
+      if (error.code === '23505') {
+        return reply.code(409).send({
+          error: "TASK_CONFLICT",
+          message: "Zaten devam eden bir gorev var. Once mevcut gorevi tamamlayin.",
+        });
+      }
       request.log.error(error);
       console.error("[TASK STATUS ERROR]", error.message);
       return reply.code(500).send({ error: "Internal server error" });
