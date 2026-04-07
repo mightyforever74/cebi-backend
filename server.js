@@ -6674,7 +6674,120 @@ fastify.get('/api/driver/drive-conditions', { preHandler: [fastify.authenticate]
 const start = async () => {
   try {
 
-    await fastify.listen({ port: PORT, host: "0.0.0.0" });
+    await 
+// ── POST /api/driver/sos ──────────────────────────────────────────────────
+fastify.post('/api/driver/sos', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+  const userId = request.user.id;
+  const { latitude, longitude, message } = request.body || {};
+
+  const lat = (latitude != null && !isNaN(Number(latitude))) ? Number(latitude) : null;
+  const lon = (longitude != null && !isNaN(Number(longitude))) ? Number(longitude) : null;
+  const msg = typeof message === 'string' ? message.slice(0, 500) : 'SOS - Acil Yardim';
+
+  const client = await fastify.pg.connect();
+  try {
+    const { rows: dr } = await client.query(
+      'SELECT id, company_id, assigned_vehicle_id FROM drivers WHERE user_id = $1',
+      [userId]
+    );
+    if (!dr.length) return reply.code(404).send({ error: 'DRIVER_NOT_FOUND' });
+    const driver = dr[0];
+
+    const { rows: recent } = await client.query(
+      `SELECT id FROM alerts
+       WHERE alert_type = 'SOS'
+         AND metadata->>'driver_id' = $1
+         AND created_at > NOW() - INTERVAL '60 seconds'
+         AND is_resolved = false
+       LIMIT 1`,
+      [driver.id.toString()]
+    );
+    if (recent.length > 0) {
+      return reply.code(429).send({
+        error: 'SOS_RATE_LIMITED',
+        message: 'SOS zaten aktif. Lutfen bekleyin.',
+      });
+    }
+
+    const { rows: tasks } = await client.query(
+      `SELECT id, task_no, title FROM tasks
+       WHERE driver_id = $1 AND status IN ('accepted','in_progress')
+       ORDER BY updated_at DESC LIMIT 1`,
+      [driver.id]
+    );
+    const activeTask = tasks[0] || null;
+
+    let vehicleInfo = null;
+    if (driver.assigned_vehicle_id) {
+      const { rows: veh } = await client.query(
+        'SELECT plate_no, brand, model FROM vehicles WHERE id = $1',
+        [driver.assigned_vehicle_id]
+      );
+      vehicleInfo = veh[0] || null;
+    }
+
+    const { rows: usr } = await client.query(
+      'SELECT first_name, last_name, phone FROM users WHERE id = $1',
+      [userId]
+    );
+    const user = usr[0] || {};
+    const driverName = ((user.first_name || '') + ' ' + (user.last_name || '')).trim() || 'Surucu';
+
+    const sosMetadata = {
+      type: 'SOS',
+      driver_id: driver.id.toString(),
+      driver_name: driverName,
+      driver_phone: user.phone ?? null,
+      latitude: lat,
+      longitude: lon,
+      vehicle: vehicleInfo ? vehicleInfo.plate_no + ' - ' + vehicleInfo.brand + ' ' + vehicleInfo.model : null,
+      task_no: activeTask ? activeTask.task_no : null,
+      task_title: activeTask ? activeTask.title : null,
+      message: msg,
+      sent_at: new Date().toISOString(),
+    };
+
+    const description = [
+      'SOS: ' + driverName,
+      vehicleInfo ? vehicleInfo.plate_no : null,
+      activeTask ? 'Gorev: ' + activeTask.task_no : null,
+      user.phone ? 'Tel: ' + user.phone : null,
+      (lat != null && lon != null) ? 'Konum: ' + lat.toFixed(5) + ', ' + lon.toFixed(5) : null,
+      msg !== 'SOS - Acil Yardim' ? msg : null,
+    ].filter(Boolean).join(' | ');
+
+    await client.query(
+      `INSERT INTO alerts (vehicle_id, alert_type, severity, title, description, metadata, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        driver.assigned_vehicle_id ?? null,
+        'SOS',
+        'critical',
+        'SOS: ' + driverName,
+        description,
+        JSON.stringify(sosMetadata),
+        driver.company_id,
+      ]
+    );
+
+    fastify.log.warn({ sosMetadata }, '[SOS] ALERT RECEIVED');
+
+    return reply.send({
+      success: true,
+      message: 'SOS alindi. Yardim yolda.',
+      driver_name: driverName,
+      task_no: activeTask ? activeTask.task_no : null,
+    });
+
+  } catch (err) {
+    request.log.error({ err }, '[SOS] endpoint error');
+    return reply.code(500).send({ error: 'SOS_FAILED' });
+  } finally {
+    client.release();
+  }
+});
+
+fastify.listen({ port: PORT, host: "0.0.0.0" });
     fastify.log.info(`Server running on port ${PORT}`);
     fastify.mqtt = mqttClient;
     startGeofenceConsumer(fastify);
