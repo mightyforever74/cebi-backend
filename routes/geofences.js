@@ -382,7 +382,7 @@ module.exports = async function (fastify) {
            end_hour       = $11,
            description    = COALESCE($12, description),
            config_version = $13,
-           scope_type     = 'vehicle',
+           scope_type     = COALESCE(scope_type, 'company'),
            vehicle_id     = COALESCE($14, vehicle_id),
            updated_at     = NOW()
          WHERE id = $15 AND company_id = $16
