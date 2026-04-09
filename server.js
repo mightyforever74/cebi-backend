@@ -2655,7 +2655,7 @@ fastify.get(
         `,
         params
       );
-      return { locations: rows };
+      return { alerts: rows };
     } finally {
       client.release();
     }
