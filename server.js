@@ -1650,6 +1650,7 @@ fastify.put(
         updateFields.push("actual_start = CURRENT_TIMESTAMP");
       } else if (status === "completed") {
         updateFields.push("actual_end = CURRENT_TIMESTAMP");
+        updateFields.push("actual_distance_km = COALESCE(actual_distance_km, total_distance_km)");
       }
 
       params.push(id, driverId);
