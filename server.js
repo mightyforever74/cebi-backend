@@ -544,6 +544,7 @@ fastify.register(require("./routes/driver"), { prefix: "/api/driver" }); // Driv
 fastify.register(require("./routes/company-plan")); // S5: GET /api/company/plan
 fastify.register(require("./plugins/etag-cache")); // S6: ETag/304 cache for polling endpoints
 fastify.register(require("./routes/geofences")); // Geofence CRUD + edge events
+fastify.register(require("./routes/reports")); // Operations Report
 
 // ============================================
 // HEALTH & SYSTEM
@@ -1650,7 +1651,6 @@ fastify.put(
         updateFields.push("actual_start = CURRENT_TIMESTAMP");
       } else if (status === "completed") {
         updateFields.push("actual_end = CURRENT_TIMESTAMP");
-        updateFields.push("actual_distance_km = COALESCE(actual_distance_km, total_distance_km)");
       }
 
       params.push(id, driverId);
@@ -3391,8 +3391,8 @@ fastify.post(
 
       const { rows } = await client.query(
         `
-          INSERT INTO tasks (task_no, driver_id, vehicle_id, title, description, start_location, end_location, route_json, waypoints, scheduled_start, scheduled_end, planned_start, planned_end, priority, created_by, status, company_id)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $10, $11, $12, $13, 'pending_review', $14)
+          INSERT INTO tasks (task_no, driver_id, vehicle_id, title, description, start_location, end_location, route_json, waypoints, scheduled_start, scheduled_end, priority, created_by, status, company_id)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending_review', $14)
             RETURNING *
         `,
         [
