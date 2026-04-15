@@ -19,7 +19,18 @@ module.exports = async function(fastify) {
           ROUND(COALESCE(SUM(actual_distance_km) FILTER (WHERE status = 'completed'), 0))::numeric as total_km,
           COUNT(*) FILTER (
             WHERE status = 'completed' AND planned_end IS NOT NULL AND actual_end > planned_end + INTERVAL '15 minutes'
-          )::int as delayed
+          )::int as delayed,
+          ROUND(
+            100.0 * COUNT(*) FILTER (
+              WHERE status = 'completed'
+              AND actual_start IS NOT NULL
+              AND planned_start IS NOT NULL
+              AND actual_start <= planned_start + INTERVAL '30 minutes'
+            ) / NULLIF(COUNT(*) FILTER (
+              WHERE status = 'completed'
+              AND planned_start IS NOT NULL
+            ), 0)
+          )::int as on_time_start_rate
         FROM tasks
         WHERE company_id = $1 AND created_at >= $2
       `, [company_id, from]);
