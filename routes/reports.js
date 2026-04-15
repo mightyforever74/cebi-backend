@@ -135,8 +135,9 @@ module.exports = async function(fastify) {
         LEFT JOIN tasks t ON t.driver_id = d.id
           AND t.created_at >= $2
         LEFT JOIN vehicles v ON v.id = d.assigned_vehicle_id
-        LEFT JOIN alerts a ON a.vehicle_id = d.assigned_vehicle_id
-          AND a.created_at >= $2
+        LEFT JOIN alerts a ON a.vehicle_id = t.vehicle_id
+          AND a.created_at >= COALESCE(t.actual_start, $2)
+          AND a.created_at <= COALESCE(t.actual_end, NOW())
         WHERE d.company_id = $1
         GROUP BY d.id, u.first_name, u.last_name, u.email
         ORDER BY completed_tasks DESC, total_alerts ASC
