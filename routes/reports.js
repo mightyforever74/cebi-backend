@@ -40,14 +40,16 @@ module.exports = async function(fastify) {
       const driverResult = await fastify.pg.query(`
         SELECT
           u.first_name, u.last_name,
-          COUNT(t.id)::int as task_count,
-          COUNT(t.id) FILTER (WHERE t.status = 'completed')::int as completed,
+          COUNT(DISTINCT t.id)::int as task_count,
+          COUNT(DISTINCT t.id) FILTER (WHERE t.status = 'completed')::int as completed,
           ROUND(AVG(EXTRACT(EPOCH FROM (t.actual_end - t.actual_start))/60) FILTER (
             WHERE t.status = 'completed' AND t.actual_start IS NOT NULL AND t.actual_end IS NOT NULL
-          ))::int as avg_duration_min
+          ))::int as avg_duration_min,
+          COUNT(DISTINCT a.id)::int as alert_count
         FROM drivers d
         JOIN users u ON u.id = d.user_id
         LEFT JOIN tasks t ON t.driver_id = d.id AND t.created_at >= $2
+        LEFT JOIN alerts a ON a.vehicle_id = d.assigned_vehicle_id AND a.created_at >= $2
         WHERE d.company_id = $1
         GROUP BY d.id, u.first_name, u.last_name
         ORDER BY task_count DESC
