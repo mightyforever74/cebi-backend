@@ -5229,6 +5229,87 @@ fastify.put(
         createdByUserId: request.user.id,
         createdByRole: request.user.role,
       });
+
+      // Sprint A2-A3: GPS Haversine mesafe hesabi
+      // Fallback sirasi: gps -> route -> (atla)
+      // null guard: actual_start veya vehicle_id yoksa hesaplama atlanir
+      try {
+        const taskRow = rows[0];
+        if (taskRow.actual_start && taskRow.vehicle_id) {
+          const { rows: vRows } = await client.query(
+            "SELECT esp32_device_id FROM vehicles WHERE id = $1",
+            [taskRow.vehicle_id]
+          );
+          const deviceId = vRows[0]?.esp32_device_id;
+
+          let distKm = null;
+          let distSource = null;
+
+          if (deviceId) {
+            const { rows: gpsRows } = await client.query(
+              `SELECT latitude, longitude FROM locations
+               WHERE device_id = $1
+               AND time >= $2 AND time <= $3
+               ORDER BY time ASC`,
+              [deviceId, taskRow.actual_start, taskRow.actual_end]
+            );
+
+            if (gpsRows.length >= 5) {
+              // Haversine + outlier filtresi
+              // Ignore impossible GPS jumps (>2km between consecutive points)
+              // Future: make configurable per fleet/profile
+              const toRad = (deg) => (deg * Math.PI) / 180;
+              const haversine = (a, b) => {
+                const R = 6371;
+                const dLat = toRad(Number(b.latitude) - Number(a.latitude));
+                const dLon = toRad(Number(b.longitude) - Number(a.longitude));
+                const sin2 =
+                  Math.sin(dLat / 2) ** 2 +
+                  Math.cos(toRad(Number(a.latitude))) *
+                  Math.cos(toRad(Number(b.latitude))) *
+                  Math.sin(dLon / 2) ** 2;
+                return R * 2 * Math.asin(Math.sqrt(sin2));
+              };
+
+              let total = 0;
+              for (let i = 1; i < gpsRows.length; i++) {
+                const seg = haversine(gpsRows[i - 1], gpsRows[i]);
+                if (seg <= 2) total += seg;
+              }
+              distKm = Math.round(total * 10) / 10;
+              distSource = "gps";
+            } else {
+              const routeDist = parseFloat(taskRow.route_json?.distance);
+              if (!isNaN(routeDist) && routeDist > 0) {
+                distKm = routeDist;
+                distSource = "route";
+              }
+            }
+          } else {
+            distSource = "no_dev";
+            const routeDist = parseFloat(taskRow.route_json?.distance);
+            if (!isNaN(routeDist) && routeDist > 0) {
+              distKm = routeDist;
+            }
+          }
+
+          if (distSource !== null) {
+            await client.query(
+              "UPDATE tasks SET actual_distance_km = $1, distance_source = $2 WHERE id = $3",
+              [distKm, distSource, id]
+            );
+          }
+        } else {
+          await client.query(
+            "UPDATE tasks SET distance_source = $1 WHERE id = $2",
+            ["no_start", id]
+          );
+        }
+      } catch (gpsErr) {
+        request.log.warn({ gpsErr }, "GPS distance calculation failed, skipping");
+      }
+      // Sprint A2-A3 sonu
+
       await client.query("COMMIT");
       return { success: true, task: rows[0] };
     } catch (error) {

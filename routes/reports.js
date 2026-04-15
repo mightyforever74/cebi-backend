@@ -30,7 +30,11 @@ module.exports = async function(fastify) {
               WHERE status = 'completed'
               AND planned_start IS NOT NULL
             ), 0)
-          )::int as on_time_start_rate
+          )::int as on_time_start_rate,
+          COUNT(*) FILTER (WHERE status = 'completed' AND distance_source = 'gps')::int as dist_gps,
+          COUNT(*) FILTER (WHERE status = 'completed' AND distance_source = 'route')::int as dist_route,
+          COUNT(*) FILTER (WHERE status = 'completed' AND distance_source = 'manual')::int as dist_manual,
+          COUNT(*) FILTER (WHERE status = 'completed' AND distance_source IN ('no_dev', 'no_start'))::int as dist_unknown
         FROM tasks
         WHERE company_id = $1 AND created_at >= $2
       `, [company_id, from]);
