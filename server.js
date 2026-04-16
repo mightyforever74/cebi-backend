@@ -1649,6 +1649,11 @@ fastify.put(
 
       if (status === "in_progress") {
         updateFields.push("actual_start = CURRENT_TIMESTAMP");
+        const odomStart = parseFloat(request.body.odometer_start);
+        if (!isNaN(odomStart) && odomStart >= 0) {
+          params.push(odomStart);
+          updateFields.push("odometer_start = $" + params.length);
+        }
       } else if (status === "completed") {
         updateFields.push("actual_end = CURRENT_TIMESTAMP");
       }
@@ -5230,6 +5235,23 @@ fastify.put(
         createdByRole: request.user.role,
       });
 
+      // Sprint A2 (Revize): Odometer-first distance model
+      // Oncelik: manual (odometre) -> gps (Haversine) -> route (route_json)
+      const odomEnd = parseFloat(request.body?.odometer_end);
+      if (!isNaN(odomEnd) && odomEnd >= 0) {
+        const odomStart2 = parseFloat(rows[0].odometer_start);
+        if (!isNaN(odomStart2) && odomEnd >= odomStart2) {
+          const odomDistKm = Math.round((odomEnd - odomStart2) * 10) / 10;
+          await client.query(
+            "UPDATE tasks SET odometer_end=$1, odometer_distance_km=$2, distance_source=$3 WHERE id=$4",
+            [odomEnd, odomDistKm, "manual", id]
+          );
+        } else {
+          await client.query("UPDATE tasks SET odometer_end=$1 WHERE id=$2", [odomEnd, id]);
+        }
+      }
+
+      // GPS / route fallback — odometer_end gelmemisse devreye girer
       // Sprint A2-A3: GPS Haversine mesafe hesabi
       // Fallback sirasi: gps -> route -> (atla)
       // null guard: actual_start veya vehicle_id yoksa hesaplama atlanir
@@ -6460,26 +6482,29 @@ fastify.get(
       const dur = summary?.duration || 0;
       const delayMin = Math.max(0, Math.round((dur - baseDur) / 60));
 
-      let statusIcon, statusLabel;
+      let statusIcon, statusCode;
       if (delayMin === 0) {
         statusIcon = "OK";
-        statusLabel = "Akici";
+        statusCode = "clear";
       } else if (delayMin < 10) {
         statusIcon = "WARN";
-        statusLabel = "Orta Yogun";
+        statusCode = "moderate";
       } else {
         statusIcon = "CRIT";
-        statusLabel = "Yogun";
+        statusCode = "heavy";
       }
 
       const incidents = (section?.incidents || [])
         .slice(0, 2)
-        .map((i) => i.description?.value || i.type || "Trafik olayi");
+        .map((i) => ({
+          text: i.description?.value || null,
+          type: (i.type || "incident").toLowerCase().replace(/[^a-z_]/g, "_")
+        }));
 
       const result = {
         traffic: {
           status_icon: statusIcon,
-          status_label: statusLabel,
+          status_code: statusCode,
           delay_min: delayMin,
           duration_min: Math.round(dur / 60),
           route_label: coords.routeLabel,
@@ -6659,15 +6684,15 @@ fastify.get('/api/driver/drive-conditions', { preHandler: [fastify.authenticate]
         const dur      = summary?.duration     || 0;
         const delayMin = Math.max(0, Math.round((dur - baseDur) / 60));
 
-        let statusIcon, statusLabel;
-        if (delayMin === 0)     { statusIcon = 'OK';   statusLabel = 'Akici';      }
-        else if (delayMin < 10) { statusIcon = 'WARN'; statusLabel = 'Orta Yogun'; }
-        else                    { statusIcon = 'CRIT'; statusLabel = 'Yogun';      }
+        let statusIcon, statusCode;
+        if (delayMin === 0)     { statusIcon = 'OK';   statusCode = 'clear';    }
+        else if (delayMin < 10) { statusIcon = 'WARN'; statusCode = 'moderate'; }
+        else                    { statusIcon = 'CRIT'; statusCode = 'heavy';    }
 
         const incidents = (section?.incidents || []).slice(0, 2)
-          .map(i => i.description?.value || i.type || 'Trafik olayi');
+          .map(i => ({ text: i.description?.value || null, type: (i.type || 'incident').toLowerCase().replace(/[^a-z_]/g, '_') }));
 
-        const result = { traffic: { status_icon: statusIcon, status_label: statusLabel, delay_min: delayMin, duration_min: Math.round(dur / 60), route_label: coords.routeLabel, incidents } };
+        const result = { traffic: { status_icon: statusIcon, status_code: statusCode, delay_min: delayMin, duration_min: Math.round(dur / 60), route_label: coords.routeLabel, incidents } };
         cacheSet(cacheKey, result);
         return result;
       })(),
@@ -7666,3 +7691,67 @@ async function checkGeofences(
     fastify.log.error("Geofence check error:", err);
   }
 }
+
+// ── DELETE /api/users/me ─────────────────────────────────
+// Apple App Store Guidelines 5.1.1 — hesap silme zorunluluğu
+// Soft delete: PII silinir, kayıtlar anonim kalır
+fastify.delete(
+  "/api/users/me",
+  { preHandler: [fastify.authenticate] },
+  async (request, reply) => {
+    const userId = request.user.id;
+    const { password } = request.body || {};
+
+    if (!password) {
+      return reply.code(400).send({ error: "Password required to delete account" });
+    }
+
+    const client = await fastify.pg.connect();
+    try {
+      await client.query("BEGIN");
+
+      const { rows: userRows } = await client.query(
+        "SELECT password_hash FROM users WHERE id = $1 AND is_active = true",
+        [userId]
+      );
+      if (userRows.length === 0) {
+        await client.query("ROLLBACK");
+        return reply.code(404).send({ error: "User not found" });
+      }
+      const valid = await bcrypt.compare(password, userRows[0].password_hash);
+      if (!valid) {
+        await client.query("ROLLBACK");
+        return reply.code(401).send({ error: "Incorrect password" });
+      }
+
+      const anonymizedEmail = "deleted_" + userId + "@deleted.tulipfleet.com";
+      const deletedAt = new Date().toISOString();
+
+      await client.query(
+        "UPDATE users SET is_active=false, email=$1, first_name='Deleted', last_name='User', phone=NULL, push_enabled=false, updated_at=NOW() WHERE id=$2",
+        [anonymizedEmail, userId]
+      );
+
+      await client.query(
+        "UPDATE drivers SET status='offline', assigned_vehicle_id=NULL, updated_at=NOW() WHERE user_id=$1",
+        [userId]
+      );
+
+      await client.query(
+        "DELETE FROM refresh_tokens WHERE user_id=$1",
+        [userId]
+      );
+
+      await client.query("COMMIT");
+      request.log.info({ userId, deletedAt }, "Account deleted (anonymized)");
+      return reply.code(200).send({ success: true, message: "Account deleted successfully" });
+
+    } catch (err) {
+      await client.query("ROLLBACK");
+      request.log.error(err);
+      return reply.code(500).send({ error: "Failed to delete account" });
+    } finally {
+      client.release();
+    }
+  }
+);
