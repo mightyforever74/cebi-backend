@@ -6589,7 +6589,7 @@ fastify.get(
         "&lon=" +
         lon +
         
-        "&units=metric&lang=en" +
+        "&units=metric&lang=" + (request.query.lang || "en") +
         "&appid=" +
         OWM_KEY;
 
@@ -6721,13 +6721,14 @@ fastify.get('/api/driver/drive-conditions', { preHandler: [fastify.authenticate]
           } finally { client.release(); }
         }
 
-        const cacheKey = 'weather_' + Math.round(lat * 10) + '_' + Math.round(lon * 10);
+        const lang = request.query.lang || 'en';
+        const cacheKey = 'weather_' + Math.round(lat * 10) + '_' + Math.round(lon * 10) + '_' + lang;
         const cached = cacheGet(cacheKey);
         if (cached) return cached;
 
         const url =
           'https://api.openweathermap.org/data/2.5/weather?lat=' + lat + '&lon=' + lon +
-          '&units=metric&lang=en&appid=' + OWM_KEY;
+          '&units=metric&lang=' + (request.query.lang || 'en') + '&appid=' + OWM_KEY;
 
         const res  = await fetch(url);
         const data = await res.json();
