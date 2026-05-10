@@ -2389,6 +2389,28 @@ fastify.delete(
         });
       }
 
+      // === devices.vehicle_id FK üzerinden bağlı cihaz kontrolü ===
+      // idx_devices_vehicle indexini kullanır, JOIN gereksiz.
+      // Sadece ASSIGNED ve ACTIVATED gerçek araç bağlılığı sayılır;
+      // pending/CREATED/PRINTED/IN_STOCK aşamasındaki cihazlar block etmez.
+      const { rows: attachedDevices } = await client.query(
+        `SELECT serial, esp_chip_id, status
+          FROM devices
+          WHERE vehicle_id = $1
+            AND status IN ('ASSIGNED', 'ACTIVATED')
+          LIMIT 1`,
+        [id]
+      );
+
+      if (attachedDevices.length > 0) {
+        return reply.code(409).send({
+          error: "Bu araçta bağlı bir cihaz var. Silmeden önce cihazı araçtan ayırın.",
+          code: "DEVICE_ATTACHED",
+          deviceSerial: attachedDevices[0].serial,
+        });
+      }
+      // === /devices.vehicle_id FK üzerinden ===
+
       // Check if vehicle exists and belongs to company
       const { rows: existing } = await client.query(
         "SELECT id FROM vehicles WHERE id = $1 AND company_id = $2",
