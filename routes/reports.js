@@ -7,6 +7,12 @@ module.exports = async function(fastify) {
     const days = parseInt(request.query.days) || 30;
     try {
       const from = new Date(Date.now() - days * 86400000).toISOString();
+      // Company name for report header
+      const companyResult = await fastify.pg.query(
+        `SELECT name FROM companies WHERE id = $1`,
+        [company_id]
+      );
+      const company_name = companyResult.rows[0]?.name || null;
       const taskResult = await fastify.pg.query(`
         SELECT
           COUNT(*)::int as total,
@@ -72,6 +78,7 @@ module.exports = async function(fastify) {
 
       return {
         data: {
+          company_name,
           period: { days, from },
           summary: taskResult.rows[0],
           vehicles: vehicleResult.rows,
@@ -93,7 +100,12 @@ module.exports = async function(fastify) {
     const days = parseInt(request.query.days) || 30;
     try {
       const from = new Date(Date.now() - days * 86400000).toISOString();
-
+// Company name for report header
+      const companyResult = await fastify.pg.query(
+        `SELECT name FROM companies WHERE id = $1`,
+        [company_id]
+      );
+      const company_name = companyResult.rows[0]?.name || null;
       const { rows } = await fastify.pg.query(`
         SELECT
           d.id as driver_id,
@@ -168,6 +180,7 @@ module.exports = async function(fastify) {
 
       return {
         data: {
+          company_name,
           period: { days, from },
           drivers,
           limitations: [
