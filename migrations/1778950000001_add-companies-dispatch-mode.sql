@@ -1,4 +1,4 @@
-﻿-- Migration: Add dispatch_mode column to public.companies
+-- Migration: Add dispatch_mode column to public.companies
 --
 -- Purpose:
 -- Per ADR-0004 v3 §6.3 and ADR-0005, companies can select their dispatcher

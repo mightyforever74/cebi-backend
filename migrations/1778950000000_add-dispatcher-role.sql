@@ -1,4 +1,4 @@
-﻿-- Migration: Add 'dispatcher' value to public.users.role CHECK constraint
+-- Migration: Add 'dispatcher' value to public.users.role CHECK constraint
 --
 -- Purpose:
 -- Adds 'dispatcher' as a valid value for the public.users.role column,
