@@ -540,6 +540,10 @@ fastify.register(adminFuelRoutes, { prefix: "/api/admin" }); // Mevcut app.use s
 // ============================================================================
 fastify.register(require("./routes/devices")); // QR Scan endpoint
 fastify.register(require("./routes/superadmin.devices")); // SuperAdmin QR management
+
+// ── KETENREGIE İNCE KÖPRÜ API ENTEGRASYONU (SIRA 6 / TASK 2) ──
+fastify.register(require("./routes/internalBridge"));
+
 fastify.register(require("./routes/driver"), { prefix: "/api/driver" }); // Driver endpoints: assign-device, available-vehicles
 fastify.register(require("./routes/company-plan")); // S5: GET /api/company/plan
 fastify.register(require("./plugins/etag-cache")); // S6: ETag/304 cache for polling endpoints
@@ -1638,7 +1642,8 @@ fastify.put(
         if (activeRows.length > 0) {
           return reply.code(409).send({
             error: "TASK_CONFLICT",
-            message: "Zaten devam eden bir gorev var. Once mevcut gorevi tamamlayin.",
+            message:
+              "Zaten devam eden bir gorev var. Once mevcut gorevi tamamlayin.",
             active_task_id: activeRows[0].id,
           });
         }
@@ -1672,10 +1677,11 @@ fastify.put(
       return { locations: rows };
     } catch (error) {
       await client.query("ROLLBACK");
-      if (error.code === '23505') {
+      if (error.code === "23505") {
         return reply.code(409).send({
           error: "TASK_CONFLICT",
-          message: "Zaten devam eden bir gorev var. Once mevcut gorevi tamamlayin.",
+          message:
+            "Zaten devam eden bir gorev var. Once mevcut gorevi tamamlayin.",
         });
       }
       request.log.error(error);
@@ -2404,7 +2410,8 @@ fastify.delete(
 
       if (attachedDevices.length > 0) {
         return reply.code(409).send({
-          error: "Bu araçta bağlı bir cihaz var. Silmeden önce cihazı araçtan ayırın.",
+          error:
+            "Bu araçta bağlı bir cihaz var. Silmeden önce cihazı araçtan ayırın.",
           code: "DEVICE_ATTACHED",
           deviceSerial: attachedDevices[0].serial,
         });
@@ -2460,12 +2467,10 @@ fastify.get(
       );
 
       if (result.rows.length === 0) {
-        return reply
-          .code(404)
-          .send({
-            error: "No location data",
-            message: "ESP32 henuz konum gondermedi",
-          });
+        return reply.code(404).send({
+          error: "No location data",
+          message: "ESP32 henuz konum gondermedi",
+        });
       }
       return result.rows[0];
     } finally {
@@ -5269,7 +5274,10 @@ fastify.put(
             [odomEnd, odomDistKm, "manual", id]
           );
         } else {
-          await client.query("UPDATE tasks SET odometer_end=$1 WHERE id=$2", [odomEnd, id]);
+          await client.query("UPDATE tasks SET odometer_end=$1 WHERE id=$2", [
+            odomEnd,
+            id,
+          ]);
         }
       }
 
@@ -5310,8 +5318,8 @@ fastify.put(
                 const sin2 =
                   Math.sin(dLat / 2) ** 2 +
                   Math.cos(toRad(Number(a.latitude))) *
-                  Math.cos(toRad(Number(b.latitude))) *
-                  Math.sin(dLon / 2) ** 2;
+                    Math.cos(toRad(Number(b.latitude))) *
+                    Math.sin(dLon / 2) ** 2;
                 return R * 2 * Math.asin(Math.sqrt(sin2));
               };
 
@@ -5350,7 +5358,10 @@ fastify.put(
           );
         }
       } catch (gpsErr) {
-        request.log.warn({ gpsErr }, "GPS distance calculation failed, skipping");
+        request.log.warn(
+          { gpsErr },
+          "GPS distance calculation failed, skipping"
+        );
       }
       // Sprint A2-A3 sonu
 
@@ -6386,7 +6397,6 @@ fastify.delete(
 // ⭐ END: DEVICE QR CODE ENDPOINTS ⭐
 // ============================================
 
-
 // ════════════════════════════════════════════════════════
 // SMART CARDS: Route Traffic + Weather
 // v1: Traffic = route-aware (HERE Router v8)
@@ -6463,8 +6473,7 @@ fastify.get(
       return reply.send({ traffic: null, reason: "NOT_CONFIGURED" });
 
     const coords = await getDriverRouteCoords(fastify, request.user.id);
-    if (!coords)
-      return reply.send({ traffic: null, reason: "NO_ACTIVE_TASK" });
+    if (!coords) return reply.send({ traffic: null, reason: "NO_ACTIVE_TASK" });
 
     // Cache key: 4 koordinat dahil (longitude eksik olursa farkli rotalar cakisir)
     const cacheKey =
@@ -6516,12 +6525,10 @@ fastify.get(
         statusCode = "heavy";
       }
 
-      const incidents = (section?.incidents || [])
-        .slice(0, 2)
-        .map((i) => ({
-          text: i.description?.value || null,
-          type: (i.type || "incident").toLowerCase().replace(/[^a-z_]/g, "_")
-        }));
+      const incidents = (section?.incidents || []).slice(0, 2).map((i) => ({
+        text: i.description?.value || null,
+        type: (i.type || "incident").toLowerCase().replace(/[^a-z_]/g, "_"),
+      }));
 
       const result = {
         traffic: {
@@ -6583,11 +6590,7 @@ fastify.get(
           [drv[0].assigned_vehicle_id]
         );
         // != null kontrolu: 0 koordinati gecerli, falsy check kullanma
-        if (
-          !loc.length ||
-          loc[0].latitude == null ||
-          loc[0].longitude == null
-        )
+        if (!loc.length || loc[0].latitude == null || loc[0].longitude == null)
           return reply.send({ weather: null, reason: "NO_LOCATION" });
 
         lat = loc[0].latitude;
@@ -6610,8 +6613,8 @@ fastify.get(
         lat +
         "&lon=" +
         lon +
-        
-        "&units=metric&lang=" + (request.query.lang || "en") +
+        "&units=metric&lang=" +
+        (request.query.lang || "en") +
         "&appid=" +
         OWM_KEY;
 
@@ -6625,7 +6628,12 @@ fastify.get(
           detail: data.message,
         });
 
-      const cur = { weather: data.weather, temp: data.main?.temp, wind_speed: data.wind?.speed, dew_point: null };
+      const cur = {
+        weather: data.weather,
+        temp: data.main?.temp,
+        wind_speed: data.wind?.speed,
+        dew_point: null,
+      };
       const code = cur?.weather?.[0]?.id || 800;
       const tempC = Math.round(cur?.temp || 0);
       const windKmh = Math.round((cur?.wind_speed || 0) * 3.6);
@@ -6644,8 +6652,7 @@ fastify.get(
       if (data.alerts?.length) alertText = data.alerts[0].event;
       else if (code >= 200 && code < 300) alertText = "Storm warning";
       else if (code >= 600 && code < 700) alertText = "Snow/ice risk";
-      else if (tempC <= 2)
-        alertText = "Black ice risk";
+      else if (tempC <= 2) alertText = "Black ice risk";
       else if (windKmh > 60) alertText = "Strong crosswind";
 
       const result = {
@@ -6671,253 +6678,351 @@ fastify.get(
 // ── GET /api/driver/drive-conditions ──────────────────────
 // Aggregation endpoint: traffic + weather tek seferde
 // Koordinatlar bir kez resolve edilir, iki bloğa paylastirilir
-fastify.get('/api/driver/drive-conditions', { preHandler: [fastify.authenticate] }, async (request, reply) => {
-  try {
-    const coords = await getDriverRouteCoords(fastify, request.user.id);
+fastify.get(
+  "/api/driver/drive-conditions",
+  { preHandler: [fastify.authenticate] },
+  async (request, reply) => {
+    try {
+      const coords = await getDriverRouteCoords(fastify, request.user.id);
 
-    const [trafficResult, weatherResult] = await Promise.allSettled([
+      const [trafficResult, weatherResult] = await Promise.allSettled([
+        (async () => {
+          const HERE_KEY = process.env.HERE_API_KEY;
+          if (!HERE_KEY) return { traffic: null, reason: "NOT_CONFIGURED" };
+          if (!coords) return { traffic: null, reason: "NO_ACTIVE_TASK" };
 
-      (async () => {
-        const HERE_KEY = process.env.HERE_API_KEY;
-        if (!HERE_KEY) return { traffic: null, reason: 'NOT_CONFIGURED' };
-        if (!coords) return { traffic: null, reason: 'NO_ACTIVE_TASK' };
+          const cacheKey =
+            "traffic_" +
+            Math.round(coords.originLat * 100) +
+            "_" +
+            Math.round(coords.originLon * 100) +
+            "_" +
+            Math.round(coords.destLat * 100) +
+            "_" +
+            Math.round(coords.destLon * 100);
 
-        const cacheKey =
-          'traffic_' +
-          Math.round(coords.originLat * 100) + '_' +
-          Math.round(coords.originLon * 100) + '_' +
-          Math.round(coords.destLat   * 100) + '_' +
-          Math.round(coords.destLon   * 100);
+          const cached = cacheGet(cacheKey);
+          if (cached) return cached;
 
-        const cached = cacheGet(cacheKey);
-        if (cached) return cached;
+          const url =
+            "https://router.hereapi.com/v8/routes?transportMode=truck" +
+            "&origin=" +
+            coords.originLat +
+            "," +
+            coords.originLon +
+            "&destination=" +
+            coords.destLat +
+            "," +
+            coords.destLon +
+            "&return=summary,incidents&apiKey=" +
+            HERE_KEY;
 
-        const url =
-          'https://router.hereapi.com/v8/routes?transportMode=truck' +
-          '&origin='      + coords.originLat + ',' + coords.originLon +
-          '&destination=' + coords.destLat   + ',' + coords.destLon +
-          '&return=summary,incidents&apiKey=' + HERE_KEY;
+          const res = await fetch(url);
+          const data = await res.json();
+          const section = data?.routes?.[0]?.sections?.[0];
+          const summary = section?.summary;
+          const baseDur = summary?.baseDuration || 0;
+          const dur = summary?.duration || 0;
+          const delayMin = Math.max(0, Math.round((dur - baseDur) / 60));
 
-        const res  = await fetch(url);
-        const data = await res.json();
-        const section  = data?.routes?.[0]?.sections?.[0];
-        const summary  = section?.summary;
-        const baseDur  = summary?.baseDuration || 0;
-        const dur      = summary?.duration     || 0;
-        const delayMin = Math.max(0, Math.round((dur - baseDur) / 60));
+          let statusIcon, statusCode;
+          if (delayMin === 0) {
+            statusIcon = "OK";
+            statusCode = "clear";
+          } else if (delayMin < 10) {
+            statusIcon = "WARN";
+            statusCode = "moderate";
+          } else {
+            statusIcon = "CRIT";
+            statusCode = "heavy";
+          }
 
-        let statusIcon, statusCode;
-        if (delayMin === 0)     { statusIcon = 'OK';   statusCode = 'clear';    }
-        else if (delayMin < 10) { statusIcon = 'WARN'; statusCode = 'moderate'; }
-        else                    { statusIcon = 'CRIT'; statusCode = 'heavy';    }
+          const incidents = (section?.incidents || [])
+            .slice(0, 2)
+            .map((i) => ({
+              text: i.description?.value || null,
+              type: (i.type || "incident")
+                .toLowerCase()
+                .replace(/[^a-z_]/g, "_"),
+            }));
 
-        const incidents = (section?.incidents || []).slice(0, 2)
-          .map(i => ({ text: i.description?.value || null, type: (i.type || 'incident').toLowerCase().replace(/[^a-z_]/g, '_') }));
+          const result = {
+            traffic: {
+              status_icon: statusIcon,
+              status_code: statusCode,
+              delay_min: delayMin,
+              duration_min: Math.round(dur / 60),
+              route_label: coords.routeLabel,
+              incidents,
+            },
+          };
+          cacheSet(cacheKey, result);
+          return result;
+        })(),
 
-        const result = { traffic: { status_icon: statusIcon, status_code: statusCode, delay_min: delayMin, duration_min: Math.round(dur / 60), route_label: coords.routeLabel, incidents } };
-        cacheSet(cacheKey, result);
-        return result;
-      })(),
+        (async () => {
+          const OWM_KEY = process.env.OPENWEATHER_API_KEY;
+          if (!OWM_KEY) return { weather: null, reason: "NOT_CONFIGURED" };
 
-      (async () => {
-        const OWM_KEY = process.env.OPENWEATHER_API_KEY;
-        if (!OWM_KEY) return { weather: null, reason: 'NOT_CONFIGURED' };
+          let lat, lon;
+          if (coords) {
+            lat = ((coords.originLat + coords.destLat) / 2).toFixed(4);
+            lon = ((coords.originLon + coords.destLon) / 2).toFixed(4);
+          } else {
+            const client = await fastify.pg.connect();
+            try {
+              const { rows: dr } = await client.query(
+                "SELECT id FROM drivers WHERE user_id = $1",
+                [request.user.id]
+              );
+              if (!dr.length) return { weather: null, reason: "NO_DRIVER" };
+              const { rows: drv } = await client.query(
+                "SELECT assigned_vehicle_id FROM drivers WHERE id = $1",
+                [dr[0].id]
+              );
+              if (!drv.length || !drv[0].assigned_vehicle_id)
+                return { weather: null, reason: "NO_VEHICLE" };
+              const { rows: loc } = await client.query(
+                "SELECT latitude, longitude FROM locations WHERE device_id = (SELECT esp32_device_id FROM vehicles WHERE id = $1) ORDER BY time DESC LIMIT 1",
+                [drv[0].assigned_vehicle_id]
+              );
+              if (
+                !loc.length ||
+                loc[0].latitude == null ||
+                loc[0].longitude == null
+              )
+                return { weather: null, reason: "NO_LOCATION" };
+              lat = loc[0].latitude;
+              lon = loc[0].longitude;
+            } finally {
+              client.release();
+            }
+          }
 
-        let lat, lon;
-        if (coords) {
-          lat = ((coords.originLat + coords.destLat) / 2).toFixed(4);
-          lon = ((coords.originLon + coords.destLon) / 2).toFixed(4);
-        } else {
-          const client = await fastify.pg.connect();
-          try {
-            const { rows: dr } = await client.query('SELECT id FROM drivers WHERE user_id = $1', [request.user.id]);
-            if (!dr.length) return { weather: null, reason: 'NO_DRIVER' };
-            const { rows: drv } = await client.query('SELECT assigned_vehicle_id FROM drivers WHERE id = $1', [dr[0].id]);
-            if (!drv.length || !drv[0].assigned_vehicle_id) return { weather: null, reason: 'NO_VEHICLE' };
-            const { rows: loc } = await client.query(
-              'SELECT latitude, longitude FROM locations WHERE device_id = (SELECT esp32_device_id FROM vehicles WHERE id = $1) ORDER BY time DESC LIMIT 1',
-              [drv[0].assigned_vehicle_id]
-            );
-            if (!loc.length || loc[0].latitude == null || loc[0].longitude == null) return { weather: null, reason: 'NO_LOCATION' };
-            lat = loc[0].latitude; lon = loc[0].longitude;
-          } finally { client.release(); }
-        }
+          const lang = request.query.lang || "en";
+          const cacheKey =
+            "weather_" +
+            Math.round(lat * 10) +
+            "_" +
+            Math.round(lon * 10) +
+            "_" +
+            lang;
+          const cached = cacheGet(cacheKey);
+          if (cached) return cached;
 
-        const lang = request.query.lang || 'en';
-        const cacheKey = 'weather_' + Math.round(lat * 10) + '_' + Math.round(lon * 10) + '_' + lang;
-        const cached = cacheGet(cacheKey);
-        if (cached) return cached;
+          const url =
+            "https://api.openweathermap.org/data/2.5/weather?lat=" +
+            lat +
+            "&lon=" +
+            lon +
+            "&units=metric&lang=" +
+            (request.query.lang || "en") +
+            "&appid=" +
+            OWM_KEY;
 
-        const url =
-          'https://api.openweathermap.org/data/2.5/weather?lat=' + lat + '&lon=' + lon +
-          '&units=metric&lang=' + (request.query.lang || 'en') + '&appid=' + OWM_KEY;
+          const res = await fetch(url);
+          const data = await res.json();
 
-        const res  = await fetch(url);
-        const data = await res.json();
+          if (data.cod && data.cod !== 200 && String(data.cod) !== "200")
+            return { weather: null, reason: "API_ERROR", detail: data.message };
 
-        if (data.cod && data.cod !== 200 && String(data.cod) !== '200')
-          return { weather: null, reason: 'API_ERROR', detail: data.message };
+          const code = data.weather?.[0]?.id || 800;
+          const tempC = Math.round(data.main?.temp || 0);
+          const windKmh = Math.round((data.wind?.speed || 0) * 3.6);
+          const desc = data.weather?.[0]?.description || "";
 
-        const code    = data.weather?.[0]?.id || 800;
-        const tempC   = Math.round(data.main?.temp || 0);
-        const windKmh = Math.round((data.wind?.speed || 0) * 3.6);
-        const desc    = data.weather?.[0]?.description || '';
+          let icon;
+          if (code >= 200 && code < 300) icon = "storm";
+          else if (code >= 300 && code < 400) icon = "drizzle";
+          else if (code >= 500 && code < 600) icon = "rain";
+          else if (code >= 600 && code < 700) icon = "snow";
+          else if (code >= 700 && code < 800) icon = "fog";
+          else if (code === 800) icon = "clear";
+          else icon = "cloudy";
 
-        let icon;
-        if      (code >= 200 && code < 300) icon = 'storm';
-        else if (code >= 300 && code < 400) icon = 'drizzle';
-        else if (code >= 500 && code < 600) icon = 'rain';
-        else if (code >= 600 && code < 700) icon = 'snow';
-        else if (code >= 700 && code < 800) icon = 'fog';
-        else if (code === 800)              icon = 'clear';
-        else                                icon = 'cloudy';
+          let alertText = null;
+          if (code >= 200 && code < 300) alertText = "Storm warning";
+          else if (code >= 600 && code < 700) alertText = "Snow/ice risk";
+          else if (tempC <= 2) alertText = "Black ice risk";
+          else if (windKmh > 60) alertText = "Strong crosswind";
 
-        let alertText = null;
-        if      (code >= 200 && code < 300) alertText = 'Storm warning';
-        else if (code >= 600 && code < 700) alertText = 'Snow/ice risk';
-        else if (tempC <= 2)                alertText = 'Black ice risk';
-        else if (windKmh > 60)              alertText = 'Strong crosswind';
+          const result = {
+            weather: {
+              icon,
+              temp_c: tempC,
+              description: desc,
+              wind_kmh: windKmh,
+              alert: alertText,
+              has_active_task: !!coords,
+            },
+          };
+          cacheSet(cacheKey, result);
+          return result;
+        })(),
+      ]);
 
-        const result = { weather: { icon, temp_c: tempC, description: desc, wind_kmh: windKmh, alert: alertText, has_active_task: !!coords } };
-        cacheSet(cacheKey, result);
-        return result;
-      })(),
-    ]);
+      const traffic =
+        trafficResult.status === "fulfilled" ? trafficResult.value : {};
+      const weather =
+        weatherResult.status === "fulfilled" ? weatherResult.value : {};
 
-    const traffic = trafficResult.status === 'fulfilled' ? trafficResult.value : {};
-    const weather = weatherResult.status === 'fulfilled' ? weatherResult.value : {};
-
-    return reply.send({
-      traffic:        traffic.traffic || null,
-      weather:        weather.weather || null,
-      traffic_reason: traffic.reason  || null,
-      weather_reason: weather.reason  || null,
-    });
-
-  } catch (err) {
-    request.log.error({ err }, 'drive-conditions error');
-    return reply.send({ traffic: null, weather: null, reason: 'SERVER_ERROR' });
+      return reply.send({
+        traffic: traffic.traffic || null,
+        weather: weather.weather || null,
+        traffic_reason: traffic.reason || null,
+        weather_reason: weather.reason || null,
+      });
+    } catch (err) {
+      request.log.error({ err }, "drive-conditions error");
+      return reply.send({
+        traffic: null,
+        weather: null,
+        reason: "SERVER_ERROR",
+      });
+    }
   }
-});
-
+);
 
 const start = async () => {
   try {
+    await // ── POST /api/driver/sos ──────────────────────────────────────────────────
+    fastify.post(
+      "/api/driver/sos",
+      { preHandler: [fastify.authenticate] },
+      async (request, reply) => {
+        const userId = request.user.id;
+        const { latitude, longitude, message } = request.body || {};
 
-    await 
-// ── POST /api/driver/sos ──────────────────────────────────────────────────
-fastify.post('/api/driver/sos', { preHandler: [fastify.authenticate] }, async (request, reply) => {
-  const userId = request.user.id;
-  const { latitude, longitude, message } = request.body || {};
+        const lat =
+          latitude != null && !isNaN(Number(latitude))
+            ? Number(latitude)
+            : null;
+        const lon =
+          longitude != null && !isNaN(Number(longitude))
+            ? Number(longitude)
+            : null;
+        const msg =
+          typeof message === "string"
+            ? message.slice(0, 500)
+            : "SOS - Acil Yardim";
 
-  const lat = (latitude != null && !isNaN(Number(latitude))) ? Number(latitude) : null;
-  const lon = (longitude != null && !isNaN(Number(longitude))) ? Number(longitude) : null;
-  const msg = typeof message === 'string' ? message.slice(0, 500) : 'SOS - Acil Yardim';
+        const client = await fastify.pg.connect();
+        try {
+          const { rows: dr } = await client.query(
+            "SELECT id, company_id, assigned_vehicle_id FROM drivers WHERE user_id = $1",
+            [userId]
+          );
+          if (!dr.length)
+            return reply.code(404).send({ error: "DRIVER_NOT_FOUND" });
+          const driver = dr[0];
 
-  const client = await fastify.pg.connect();
-  try {
-    const { rows: dr } = await client.query(
-      'SELECT id, company_id, assigned_vehicle_id FROM drivers WHERE user_id = $1',
-      [userId]
-    );
-    if (!dr.length) return reply.code(404).send({ error: 'DRIVER_NOT_FOUND' });
-    const driver = dr[0];
-
-    const { rows: recent } = await client.query(
-      `SELECT id FROM alerts
+          const { rows: recent } = await client.query(
+            `SELECT id FROM alerts
        WHERE alert_type = 'SOS'
          AND metadata->>'driver_id' = $1
          AND created_at > NOW() - INTERVAL '60 seconds'
          AND is_resolved = false
        LIMIT 1`,
-      [driver.id.toString()]
-    );
-    if (recent.length > 0) {
-      return reply.code(429).send({
-        error: 'SOS_RATE_LIMITED',
-        message: 'SOS zaten aktif. Lutfen bekleyin.',
-      });
-    }
+            [driver.id.toString()]
+          );
+          if (recent.length > 0) {
+            return reply.code(429).send({
+              error: "SOS_RATE_LIMITED",
+              message: "SOS zaten aktif. Lutfen bekleyin.",
+            });
+          }
 
-    const { rows: tasks } = await client.query(
-      `SELECT id, task_no, title FROM tasks
+          const { rows: tasks } = await client.query(
+            `SELECT id, task_no, title FROM tasks
        WHERE driver_id = $1 AND status IN ('accepted','in_progress')
        ORDER BY updated_at DESC LIMIT 1`,
-      [driver.id]
-    );
-    const activeTask = tasks[0] || null;
+            [driver.id]
+          );
+          const activeTask = tasks[0] || null;
 
-    let vehicleInfo = null;
-    if (driver.assigned_vehicle_id) {
-      const { rows: veh } = await client.query(
-        'SELECT plate_no, brand, model FROM vehicles WHERE id = $1',
-        [driver.assigned_vehicle_id]
-      );
-      vehicleInfo = veh[0] || null;
-    }
+          let vehicleInfo = null;
+          if (driver.assigned_vehicle_id) {
+            const { rows: veh } = await client.query(
+              "SELECT plate_no, brand, model FROM vehicles WHERE id = $1",
+              [driver.assigned_vehicle_id]
+            );
+            vehicleInfo = veh[0] || null;
+          }
 
-    const { rows: usr } = await client.query(
-      'SELECT first_name, last_name, phone FROM users WHERE id = $1',
-      [userId]
-    );
-    const user = usr[0] || {};
-    const driverName = ((user.first_name || '') + ' ' + (user.last_name || '')).trim() || 'Surucu';
+          const { rows: usr } = await client.query(
+            "SELECT first_name, last_name, phone FROM users WHERE id = $1",
+            [userId]
+          );
+          const user = usr[0] || {};
+          const driverName =
+            ((user.first_name || "") + " " + (user.last_name || "")).trim() ||
+            "Surucu";
 
-    const sosMetadata = {
-      type: 'SOS',
-      driver_id: driver.id.toString(),
-      driver_name: driverName,
-      driver_phone: user.phone ?? null,
-      latitude: lat,
-      longitude: lon,
-      vehicle: vehicleInfo ? vehicleInfo.plate_no + ' - ' + vehicleInfo.brand + ' ' + vehicleInfo.model : null,
-      task_no: activeTask ? activeTask.task_no : null,
-      task_title: activeTask ? activeTask.title : null,
-      message: msg,
-      sent_at: new Date().toISOString(),
-    };
+          const sosMetadata = {
+            type: "SOS",
+            driver_id: driver.id.toString(),
+            driver_name: driverName,
+            driver_phone: user.phone ?? null,
+            latitude: lat,
+            longitude: lon,
+            vehicle: vehicleInfo
+              ? vehicleInfo.plate_no +
+                " - " +
+                vehicleInfo.brand +
+                " " +
+                vehicleInfo.model
+              : null,
+            task_no: activeTask ? activeTask.task_no : null,
+            task_title: activeTask ? activeTask.title : null,
+            message: msg,
+            sent_at: new Date().toISOString(),
+          };
 
-    const description = [
-      'SOS: ' + driverName,
-      vehicleInfo ? vehicleInfo.plate_no : null,
-      activeTask ? 'Gorev: ' + activeTask.task_no : null,
-      user.phone ? 'Tel: ' + user.phone : null,
-      (lat != null && lon != null) ? 'Konum: ' + lat.toFixed(5) + ', ' + lon.toFixed(5) : null,
-      msg !== 'SOS - Acil Yardim' ? msg : null,
-    ].filter(Boolean).join(' | ');
+          const description = [
+            "SOS: " + driverName,
+            vehicleInfo ? vehicleInfo.plate_no : null,
+            activeTask ? "Gorev: " + activeTask.task_no : null,
+            user.phone ? "Tel: " + user.phone : null,
+            lat != null && lon != null
+              ? "Konum: " + lat.toFixed(5) + ", " + lon.toFixed(5)
+              : null,
+            msg !== "SOS - Acil Yardim" ? msg : null,
+          ]
+            .filter(Boolean)
+            .join(" | ");
 
-    await client.query(
-      `INSERT INTO alerts (vehicle_id, alert_type, severity, title, description, metadata, company_id)
+          await client.query(
+            `INSERT INTO alerts (vehicle_id, alert_type, severity, title, description, metadata, company_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        driver.assigned_vehicle_id ?? null,
-        'SOS',
-        'critical',
-        'SOS: ' + driverName,
-        description,
-        JSON.stringify(sosMetadata),
-        driver.company_id,
-      ]
+            [
+              driver.assigned_vehicle_id ?? null,
+              "SOS",
+              "critical",
+              "SOS: " + driverName,
+              description,
+              JSON.stringify(sosMetadata),
+              driver.company_id,
+            ]
+          );
+
+          fastify.log.warn({ sosMetadata }, "[SOS] ALERT RECEIVED");
+
+          return reply.send({
+            success: true,
+            message: "SOS alindi. Yardim yolda.",
+            driver_name: driverName,
+            task_no: activeTask ? activeTask.task_no : null,
+          });
+        } catch (err) {
+          request.log.error({ err }, "[SOS] endpoint error");
+          return reply.code(500).send({ error: "SOS_FAILED" });
+        } finally {
+          client.release();
+        }
+      }
     );
 
-    fastify.log.warn({ sosMetadata }, '[SOS] ALERT RECEIVED');
-
-    return reply.send({
-      success: true,
-      message: 'SOS alindi. Yardim yolda.',
-      driver_name: driverName,
-      task_no: activeTask ? activeTask.task_no : null,
-    });
-
-  } catch (err) {
-    request.log.error({ err }, '[SOS] endpoint error');
-    return reply.code(500).send({ error: 'SOS_FAILED' });
-  } finally {
-    client.release();
-  }
-});
-
-fastify.listen({ port: PORT, host: "0.0.0.0" });
+    fastify.listen({ port: PORT, host: "0.0.0.0" });
     fastify.log.info(`Server running on port ${PORT}`);
     fastify.mqtt = mqttClient;
     startGeofenceConsumer(fastify);
@@ -7726,7 +7831,9 @@ fastify.delete(
     const { password } = request.body || {};
 
     if (!password) {
-      return reply.code(400).send({ error: "Password required to delete account" });
+      return reply
+        .code(400)
+        .send({ error: "Password required to delete account" });
     }
 
     const client = await fastify.pg.connect();
@@ -7760,15 +7867,15 @@ fastify.delete(
         [userId]
       );
 
-      await client.query(
-        "DELETE FROM refresh_tokens WHERE user_id=$1",
-        [userId]
-      );
+      await client.query("DELETE FROM refresh_tokens WHERE user_id=$1", [
+        userId,
+      ]);
 
       await client.query("COMMIT");
       request.log.info({ userId, deletedAt }, "Account deleted (anonymized)");
-      return reply.code(200).send({ success: true, message: "Account deleted successfully" });
-
+      return reply
+        .code(200)
+        .send({ success: true, message: "Account deleted successfully" });
     } catch (err) {
       await client.query("ROLLBACK");
       request.log.error(err);
