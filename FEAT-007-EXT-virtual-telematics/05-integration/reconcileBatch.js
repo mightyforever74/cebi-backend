@@ -65,13 +65,13 @@ async function main() {
               AND l."time" >= f.prev_fill_time 
               AND l."time" <= f.fill_time
         )
-        SELECT 
+            SELECT 
             device_id,
             vehicle_id,
             COUNT(*) as total_breadcrumbs,
             MAX(fill_time) as last_fill_time,
-            ROUND(SUM(ST_DistanceSphere(geom, prev_geom)) / 1000.0, 2)::float as gps_haversine_km,
-            ROUND(MAX(odo_actual_km), 2)::float as odo_actual_km
+            ROUND((SUM(ST_DistanceSphere(geom, prev_geom)) / 1000.0)::numeric, 2)::float as gps_haversine_km,
+            ROUND(MAX(odo_actual_km)::numeric, 2)::float as odo_actual_km
         FROM ordered_locations
         WHERE prev_geom IS NOT NULL
         GROUP BY device_id, vehicle_id;
