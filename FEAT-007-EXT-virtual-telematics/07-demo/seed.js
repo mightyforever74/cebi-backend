@@ -49,12 +49,6 @@ const DOBBE_FLEET_MATRIX = [
     device_id: "DEMO-ESP-004",
     style: "balanced",
   },
-  {
-    driver_id: "29504754-0ab6-4e5a-b71d-fe4558369c88",
-    vehicle_id: "5ad2dd21-d0ad-4b4a-a48b-b04fb6e3e4a5",
-    device_id: "14C046D4DB1C",
-    style: "standard",
-  },
 ];
 
 // Benelüks bounding box (mantıklı koordinat kafesi)
@@ -121,10 +115,14 @@ async function main() {
           // Mantıklı koordinat kayması, kafes taşma koruması
           v.currentLat += (Math.random() - 0.5) * 0.08;
           v.currentLng += (Math.random() - 0.5) * 0.08;
-          if (v.currentLat < NL_BOUNDS.latMin) v.currentLat = NL_BOUNDS.latMin + 0.1;
-          if (v.currentLat > NL_BOUNDS.latMax) v.currentLat = NL_BOUNDS.latMax - 0.1;
-          if (v.currentLng < NL_BOUNDS.lngMin) v.currentLng = NL_BOUNDS.lngMin + 0.1;
-          if (v.currentLng > NL_BOUNDS.lngMax) v.currentLng = NL_BOUNDS.lngMax - 0.1;
+          if (v.currentLat < NL_BOUNDS.latMin)
+            v.currentLat = NL_BOUNDS.latMin + 0.1;
+          if (v.currentLat > NL_BOUNDS.latMax)
+            v.currentLat = NL_BOUNDS.latMax - 0.1;
+          if (v.currentLng < NL_BOUNDS.lngMin)
+            v.currentLng = NL_BOUNDS.lngMin + 0.1;
+          if (v.currentLng > NL_BOUNDS.lngMax)
+            v.currentLng = NL_BOUNDS.lngMax - 0.1;
 
           const speed = randInt(55, 90);
           const tripKM = randInt(30, 100);
@@ -175,7 +173,8 @@ async function main() {
 
         // KRİTİK: eco_score/safety_score numeric(3,2) => MAX 9.99. 0.00-1.00 ölçek.
         // İhlal arttıkça skor düşer (1.00 mükemmel, 0.00 kötü).
-        const penalty = harshBrakes * 0.06 + harshAccels * 0.05 + overSpeeds * 0.08;
+        const penalty =
+          harshBrakes * 0.06 + harshAccels * 0.05 + overSpeeds * 0.08;
         const safetyScore = Math.max(0, Math.min(1, 1 - penalty)).toFixed(2);
         const ecoPenalty = idleMinutes * 0.008 + harshAccels * 0.04;
         const ecoScore = Math.max(0, Math.min(1, 1 - ecoPenalty)).toFixed(2);
@@ -230,7 +229,9 @@ async function main() {
           const baseRate = CONSUMPTION_BY_STYLE[v.style] || 28;
           // Günlük dalgalanma (STDDEV>0 olsun, tutarlılık analizi anlamlı çıksın)
           const rate = baseRate + rand(-1.5, 1.5);
-          const liters = parseFloat(((rangeSinceLastFill * rate) / 100).toFixed(2));
+          const liters = parseFloat(
+            ((rangeSinceLastFill * rate) / 100).toFixed(2)
+          );
           const cost = parseFloat((liters * FUEL_PRICE_PER_LITER).toFixed(2));
 
           // fuel.js formülü (tek kaynak doğruluk): consumption = liters/km*100
