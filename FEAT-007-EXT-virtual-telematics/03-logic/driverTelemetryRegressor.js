@@ -90,7 +90,7 @@ function analyzeDriverBehaviorCorrelation(dataPoints, fuelCostPerLiter = 1.75) {
   // 4. Patron içgörüsü
   let insight =
     "Sürücü davranışı ile yakıt tüketimi arasında belirgin bir korelasyon saptanmadı.";
-  if (rSquared > 0.6 && slope > 0) {
+  if (rSquared > 0.5 && slope > 0) {
     insight = `Güçlü Korelasyon (R²: ${(rSquared * 100).toFixed(
       0
     )}%). Agresif sürüş endeksindeki her 1 puanlık artış, yakıt tüketimini doğrudan ${slope.toFixed(

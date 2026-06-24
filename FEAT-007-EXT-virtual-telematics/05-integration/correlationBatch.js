@@ -72,6 +72,7 @@ async function main() {
     }
 
     // Küresel Regresyon Analizinin Çalıştırılması (543 Nokta Havuzu)
+    // Küresel Regresyon Analizinin Çalıştırılması (543 Nokta Havuzu)
     const report = analyzeDriverBehaviorCorrelation(res.rows, 1.75);
 
     console.log("\n=======================================================");
@@ -92,6 +93,29 @@ async function main() {
     );
     console.log(`\n💡 BOSS INSIGHT:\n   ${report.insight}`);
     console.log("=======================================================");
+
+    // ── SNAPSHOT MÜHÜRLEME: uçucu sonucu companies.fuel_analytics_snapshot'a yaz ──
+    // (Sabit JSON DEĞİL; batch'in gerçek hesabından parametreli yazılır, her koşuda güncel kalır)
+    const snapshot = {
+      updated_at: new Date().toISOString(),
+      total_days: res.rows.length,
+      r_squared: report.rSquared,
+      slope: report.slope,
+      intercept: report.intercept,
+      total_idling_loss_euro: report.totalIdlingCostEuro,
+      insight: report.insight,
+    };
+
+    await client.query(
+      `UPDATE public.companies
+         SET fuel_analytics_snapshot = $1::jsonb
+       WHERE id = $2`,
+      [JSON.stringify(snapshot), "efbaa346-cde9-489a-b3e9-6fd61df0c121"]
+    );
+
+    console.log(
+      "\n💾 [Snapshot] Sonuç companies.fuel_analytics_snapshot kolonuna mühürlendi."
+    );
   } catch (error) {
     console.error(
       "❌ [Batch Execution Error] Korelasyon analizi çöktü:",
