@@ -17,6 +17,8 @@ redisClient.on("connect", () => console.log("✅ Redis Geofence Connected"));
 redisClient.on("error", (err) => console.error("[REDIS] Error:", err.message));
 const bcrypt = require("bcryptjs");
 const { startGeofenceConsumer } = require("./services/geofenceService");
+const { createProvider } = require("./services/routing/factory");
+const routingProvider = createProvider();
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 const QRCode = require("qrcode");
@@ -6468,10 +6470,8 @@ fastify.get(
   "/api/driver/route-traffic",
   { preHandler: [fastify.authenticate] },
   async (request, reply) => {
-    const HERE_KEY = process.env.HERE_API_KEY;
-    if (!HERE_KEY)
-      return reply.send({ traffic: null, reason: "NOT_CONFIGURED" });
-
+    // ADR-0014 Faz 2: HERE cagrisi routingProvider'a tasindi.
+    // Handler artik API anahtarini okumaz; key yoksa provider NOT_CONFIGURED firlatir.
     const coords = await getDriverRouteCoords(fastify, request.user.id);
     if (!coords) return reply.send({ traffic: null, reason: "NO_ACTIVE_TASK" });
 
@@ -6490,60 +6490,25 @@ fastify.get(
     if (cached) return reply.send(cached);
 
     try {
-      const url =
-        "https://router.hereapi.com/v8/routes?transportMode=truck" +
-        "&origin=" +
-        coords.originLat +
-        "," +
-        coords.originLon +
-        "&destination=" +
-        coords.destLat +
-        "," +
-        coords.destLon +
-        "&return=summary,incidents" +
-        "&apiKey=" +
-        HERE_KEY;
-
-      const res = await fetch(url);
-      const data = await res.json();
-
-      const section = data?.routes?.[0]?.sections?.[0];
-      const summary = section?.summary;
-      const baseDur = summary?.baseDuration || 0;
-      const dur = summary?.duration || 0;
-      const delayMin = Math.max(0, Math.round((dur - baseDur) / 60));
-
-      let statusIcon, statusCode;
-      if (delayMin === 0) {
-        statusIcon = "OK";
-        statusCode = "clear";
-      } else if (delayMin < 10) {
-        statusIcon = "WARN";
-        statusCode = "moderate";
-      } else {
-        statusIcon = "CRIT";
-        statusCode = "heavy";
-      }
-
-      const incidents = (section?.incidents || []).slice(0, 2).map((i) => ({
-        text: i.description?.value || null,
-        type: (i.type || "incident").toLowerCase().replace(/[^a-z_]/g, "_"),
-      }));
+      const routeResult = await routingProvider.computeRoute({
+        origin: { lat: coords.originLat, lon: coords.originLon },
+        destination: { lat: coords.destLat, lon: coords.destLon },
+        transportMode: "truck",
+      });
 
       const result = {
-        traffic: {
-          status_icon: statusIcon,
-          status_code: statusCode,
-          delay_min: delayMin,
-          duration_min: Math.round(dur / 60),
-          route_label: coords.routeLabel,
-          incidents,
-        },
+        traffic: routingProvider.buildTrafficPayload(
+          routeResult,
+          coords.routeLabel
+        ),
       };
 
       cacheSet(cacheKey, result);
       return reply.send(result);
     } catch (err) {
+      if (err && err.code === "NOT_CONFIGURED") {
+        return reply.send({ traffic: null, reason: "NOT_CONFIGURED" });
+      }
       request.log.error({ err }, "route-traffic fetch error");
       return reply.send({ traffic: null, reason: "API_ERROR" });
     }
