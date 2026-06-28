@@ -20,7 +20,7 @@ class HereRoutingProvider {
     /** @type {import("./contract").ProviderCapabilities} */
     this.capabilities = {
       computeRoute: true,
-      computeMatrix: true,
+      computeMatrix: false, // Phase 2: computeMatrix metodu yazilana kadar false (runtime gercegi)
       traffic: true,
       solveVrp: false,
       tollCost: false,
