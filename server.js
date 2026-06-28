@@ -6652,8 +6652,8 @@ fastify.get(
 
       const [trafficResult, weatherResult] = await Promise.allSettled([
         (async () => {
-          const HERE_KEY = process.env.HERE_API_KEY;
-          if (!HERE_KEY) return { traffic: null, reason: "NOT_CONFIGURED" };
+          // ADR-0014 Faz 3: HERE cagrisi routingProvider'a tasindi (drive-conditions traffic).
+          // IIFE oldugu icin reply.send YOK; allSettled icin return semantigi korunur.
           if (!coords) return { traffic: null, reason: "NO_ACTIVE_TASK" };
 
           const cacheKey =
@@ -6669,60 +6669,27 @@ fastify.get(
           const cached = cacheGet(cacheKey);
           if (cached) return cached;
 
-          const url =
-            "https://router.hereapi.com/v8/routes?transportMode=truck" +
-            "&origin=" +
-            coords.originLat +
-            "," +
-            coords.originLon +
-            "&destination=" +
-            coords.destLat +
-            "," +
-            coords.destLon +
-            "&return=summary,incidents&apiKey=" +
-            HERE_KEY;
+          try {
+            const routeResult = await routingProvider.computeRoute({
+              origin: { lat: coords.originLat, lon: coords.originLon },
+              destination: { lat: coords.destLat, lon: coords.destLon },
+              transportMode: "truck",
+            });
 
-          const res = await fetch(url);
-          const data = await res.json();
-          const section = data?.routes?.[0]?.sections?.[0];
-          const summary = section?.summary;
-          const baseDur = summary?.baseDuration || 0;
-          const dur = summary?.duration || 0;
-          const delayMin = Math.max(0, Math.round((dur - baseDur) / 60));
-
-          let statusIcon, statusCode;
-          if (delayMin === 0) {
-            statusIcon = "OK";
-            statusCode = "clear";
-          } else if (delayMin < 10) {
-            statusIcon = "WARN";
-            statusCode = "moderate";
-          } else {
-            statusIcon = "CRIT";
-            statusCode = "heavy";
+            const result = {
+              traffic: routingProvider.buildTrafficPayload(
+                routeResult,
+                coords.routeLabel
+              ),
+            };
+            cacheSet(cacheKey, result);
+            return result;
+          } catch (err) {
+            if (err && err.code === "NOT_CONFIGURED") {
+              return { traffic: null, reason: "NOT_CONFIGURED" };
+            }
+            return { traffic: null, reason: "API_ERROR" };
           }
-
-          const incidents = (section?.incidents || [])
-            .slice(0, 2)
-            .map((i) => ({
-              text: i.description?.value || null,
-              type: (i.type || "incident")
-                .toLowerCase()
-                .replace(/[^a-z_]/g, "_"),
-            }));
-
-          const result = {
-            traffic: {
-              status_icon: statusIcon,
-              status_code: statusCode,
-              delay_min: delayMin,
-              duration_min: Math.round(dur / 60),
-              route_label: coords.routeLabel,
-              incidents,
-            },
-          };
-          cacheSet(cacheKey, result);
-          return result;
         })(),
 
         (async () => {
