@@ -10,15 +10,23 @@
  * MANTIK:
  *  - L_start = vehicles.fuel_capacity (seed son dolum is_full_tank=true → depo full)
  *  - günlük_ort_km = (son_odo − ilk_odo) / gün_aralığı   [aracın gerçek seed verisi]
- *  - kör_mesafe = günlük_ort_km × (bugün − son_dolum_tarihi)
+ *  - kör_mesafe = günlük_ort_km(capli) × kör_gün(capli)
  *  - calculateVirtualFuelLevel(...) → currentFuelLiters
- *  - UPDATE vehicles.current_fuel_level (litre) + total_km
+ *  - UPDATE vehicles.current_fuel_level (litre)  [total_km BİLEREK yazılmaz]
+ *
+ * KALİBRASYON (28.06.2026): Seed odometer aralıkları küçük olduğundan ham
+ * günlük km anomalik çıkabiliyor (örn. 3000+ km/gün). İki cap ile makul lojistik
+ * sınırına çekilir. Cap'ler .env'den ayarlanabilir (default 450 km/gün, 5 gün):
+ *   FUEL_CAP_KM_PER_DAY   (ör. bir ay sonra 600 yapmak için .env'de değiştir)
+ *   FUEL_CAP_BLIND_DAYS
+ * total_km YAZILMAZ: capli kör mesafe yine odometre'yi saptıracağından, km
+ * mevcut değerinde dürüstçe sabit bırakılır.
  *
  * Pure fonksiyon (03-logic) DEĞİŞMEDEN beslenir (Seçenek A — Odometer Core).
  * Yarın canlı MQTT gelince: bu batch yerine MQTT hook, pure fonksiyon aynı kalır.
  *
  * ÇALIŞTIRMA: sunucuda, fleetadmin .env ile
- *   cd /opt/fleet/backend-staging/FEAT-007-EXT-virtual-telematics/05-integration
+ *   cd .../FEAT-007-EXT-virtual-telematics/05-integration
  *   node fuelSnapshotBatch.js
  */
 
@@ -32,6 +40,10 @@ const {
 
 const DOBBE_COMPANY_ID = "efbaa346-cde9-489a-b3e9-6fd61df0c121";
 
+// Kalibrasyon cap'leri (.env ile ayarlanabilir, yoksa makul default)
+const CAP_KM_PER_DAY = parseInt(process.env.FUEL_CAP_KM_PER_DAY, 10) || 450;
+const CAP_BLIND_DAYS = parseInt(process.env.FUEL_CAP_BLIND_DAYS, 10) || 5;
+
 async function main() {
   if (!process.env.DATABASE_URL) {
     console.error("❌ [.env] DATABASE_URL bulunamadı.");
@@ -41,6 +53,9 @@ async function main() {
   const client = new Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
   console.log("🚀 [Snapshot] Fleetadmin ile bağlanıldı.");
+  console.log(
+    `⚙️  Cap: ${CAP_KM_PER_DAY} km/gün, ${CAP_BLIND_DAYS} kör gün (.env ile ayarlanabilir)`
+  );
 
   try {
     // Her Dobbe aracı için snapshot girdileri (gerçek seed verisinden)
@@ -77,11 +92,15 @@ async function main() {
       const ilkOdo = parseFloat(v.ilk_odo);
       const gunAraligi = parseInt(v.gun_araligi, 10) || 1;
 
-      // Aracın gerçek günlük ortalama km'si (seed odometer aralığından)
-      const gunlukOrtKM = (sonOdo - ilkOdo) / gunAraligi;
+      // Aracın ham günlük ortalama km'si (seed odometer aralığından)
+      const gunlukOrtKMRaw = (sonOdo - ilkOdo) / gunAraligi;
+      // CAP: anomalik günlük km'yi makul lojistik tavanına çek (0/NaN ise 200)
+      const gunlukOrtKM = Math.min(CAP_KM_PER_DAY, gunlukOrtKMRaw || 200);
 
-      // Kör günler mesafesi (son dolumdan bugüne)
-      const korMesafe = gunlukOrtKM * korGun;
+      // CAP: kör günü tavanla (dolum sonrası ilk hafta senaryosu)
+      const korGunCapped = Math.min(CAP_BLIND_DAYS, korGun);
+      // Kör günler mesafesi (capli)
+      const korMesafe = gunlukOrtKM * korGunCapped;
 
       // Pure fonksiyon (Seçenek A): L_start = kapasite (is_full_tank)
       const { currentFuelLiters, percentage } = calculateVirtualFuelLevel({
@@ -91,21 +110,20 @@ async function main() {
         fuelCapacity: capacity,
       });
 
-      // Sanal güncel odometer = son dolum odometer + kör mesafe
-      const virtualTotalKM = Math.round(sonOdo + korMesafe);
-
+      // total_km BİLEREK yazılmaz (capli mesafe yine odometre'yi saptırır).
+      // Sadece current_fuel_level güncellenir; total_km mevcut değerinde kalır.
       await client.query(
         `UPDATE public.vehicles
-         SET current_fuel_level = $1, total_km = $2, updated_at = NOW()
-         WHERE id = $3`,
-        [currentFuelLiters, virtualTotalKM, v.id]
+         SET current_fuel_level = $1, updated_at = NOW()
+         WHERE id = $2`,
+        [currentFuelLiters, v.id]
       );
 
       console.log(
-        `  ${v.plate_no.padEnd(10)} | kör ${korGun}g × ${gunlukOrtKM.toFixed(
+        `  ${v.plate_no.padEnd(10)} | kör ${korGunCapped}g × ${gunlukOrtKM.toFixed(
           0
         )}km/g = ${korMesafe.toFixed(0)}km | ` +
-          `tüketim ${avgConsumption.toFixed(1)} | → ${currentFuelLiters}L (%${percentage}) | total_km ${virtualTotalKM}`
+          `tüketim ${avgConsumption.toFixed(1)} | → ${currentFuelLiters}L (%${percentage})`
       );
     }
 
