@@ -6,6 +6,14 @@
 -- Sema sahipligi: enterprise.* -- sadece enterprise backend okur/yazar.
 -- Apply order: staging (fleet_tracking_staging) -> smoke test ->
 --              production backup -> production (fleet_tracking).
+--
+-- DUZELTME (2026-07-04): Onceki surumde "Down Migration" bolumu sadece
+-- satir yorumuyla (--) baslatilmisti, altindaki DROP komutlari GERCEK SQL
+-- olarak kaliyordu. psql dosyayi bastan sona sirali calistirdigi icin
+-- migration TABLOYU OLUSTURUP HEMEN ARDINDAN KENDI KENDINI SILIYORDU
+-- (staging smoke test'te 0 rows olarak yakalandi, production'a hic
+-- uygulanmadan). Down Migration artik blok yoruma (/* */) alindi -
+-- rollback gerekirse icindeki komutlar elle disari kopyalanip calistirilir.
 -- ============================================================================
 
 -- Up Migration
@@ -47,7 +55,11 @@ BEGIN
 END $$;
 
 
--- Down Migration
-
+-- ============================================================================
+-- Down Migration (REFERANS AMACLI - blok yorum icinde, otomatik calismaz)
+-- Rollback gerekirse icindeki iki satiri disari kopyalayip elle calistir.
+-- ============================================================================
+/*
 DROP TRIGGER IF EXISTS trg_notification_preferences_updated_at ON enterprise.notification_preferences;
 DROP TABLE IF EXISTS enterprise.notification_preferences;
+*/
