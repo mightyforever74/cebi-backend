@@ -1352,7 +1352,7 @@ fastify.get(
         statusFilter = `t.status IN ('completed', 'rejected', 'cancelled')`;
       } else {
         // Aktif görevler (YENİ: pending_review ve accepted eklendi)
-        statusFilter = `t.status IN ('pending', 'pending_review', 'accepted', 'in_progress')`;
+        statusFilter = `t.status IN ('pending', 'pending_review', 'accepted', 'assigned', 'in_progress')`;
       }
 
       const { rows } = await client.query(
