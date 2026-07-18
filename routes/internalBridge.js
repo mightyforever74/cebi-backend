@@ -3,7 +3,72 @@
 /**
  * TulipFleet Core — Kurşun Geçirmez İnce Köprü API Endpoint'i
  * Aligned with ADR-0009 §5.2 & INTEGRATION_BOUNDARIES (Fail-Closed Auth & Atomic Trx)
+ *
+ * FIX (2026-07-18): Push notification eklendi. Onceden task INSERT ediliyordu
+ * ama surucuye hicbir bildirim gitmiyordu (BUG #2, bkz. ARCHITECTURE_DECISION
+ * task-management-api-driven.md SS4.1). Expo Push API kullanilir (mobil
+ * usePushNotifications.js -> POST /api/push/register ile zaten kayitli olan
+ * expo_push_token uzerinden). Push, COMMIT SONRASI, best-effort (no-throw)
+ * cagrilir - transaction'in bir parcasi degildir, basarisiz olsa bile task
+ * olusturma islemi geri alinmaz.
  */
+
+// Best-effort push gonderimi. Hata firlatmaz (no-throw), cagiran kodu etkilemez.
+async function sendPushNotification(fastify, { userId, title, body, data }) {
+  if (!userId) return;
+  try {
+    const client = await fastify.pg.connect();
+    let pushToken = null;
+    try {
+      const { rows } = await client.query(
+        "SELECT expo_push_token FROM users WHERE id = $1",
+        [userId]
+      );
+      pushToken = rows[0]?.expo_push_token || null;
+    } finally {
+      client.release();
+    }
+
+    if (!pushToken) {
+      fastify.log.info(
+        { userId },
+        "[Push] No expo_push_token registered, skipping"
+      );
+      return;
+    }
+
+    const res = await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Accept-Encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        to: pushToken,
+        title,
+        body,
+        data: data || {},
+        sound: "default",
+      }),
+    });
+
+    if (!res.ok) {
+      fastify.log.warn(
+        { status: res.status, userId },
+        "[Push] Expo push send failed"
+      );
+    } else {
+      fastify.log.info({ userId }, "[Push] Notification sent");
+    }
+  } catch (err) {
+    fastify.log.error(
+      { err, userId },
+      "[Push] sendPushNotification failed (no-throw)"
+    );
+  }
+}
+
 async function internalBridgeRoutes(fastify) {
   // 1. GÜVENLİK FİLTRESİ: IP Allowlist ve FAIL-CLOSED Token Denetimi
   fastify.addHook("onRequest", async (request, reply) => {
@@ -145,6 +210,17 @@ async function internalBridgeRoutes(fastify) {
       );
 
       await client.query("COMMIT"); // TÜM İŞLEMLERİ ATOMİK OLARAK VERİTABANINA KİLİTLE!
+
+      // FIX (2026-07-18): Push bildirimi - COMMIT SONRASI, best-effort, no-throw.
+      // Transaction'a dahil degil, basarisiz olursa task olusturma etkilenmez.
+      if (user_id) {
+        sendPushNotification(fastify, {
+          userId: user_id,
+          title: "Yeni Görev Atandı",
+          body: `${task_no}: ${start_location_str} → ${end_location_str}`,
+          data: { taskNo: insertedTask[0].task_no, taskId: insertedTask[0].id },
+        }).catch(() => {}); // ekstra guvenlik agi, fonksiyon zaten no-throw
+      }
 
       return reply.status(201).send({
         success: true,
