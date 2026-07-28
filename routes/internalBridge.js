@@ -11,6 +11,13 @@
  * expo_push_token uzerinden). Push, COMMIT SONRASI, best-effort (no-throw)
  * cagrilir - transaction'in bir parcasi degildir, basarisiz olsa bile task
  * olusturma islemi geri alinmaz.
+ *
+ * A2 (2026-07-22): Turetilmis baslik (derivedTitle). Dispatcher/enterprise
+ * gorevleri title GONDERMEZ -> mobil listede TLP-26-XXXXX kodu gorunuyordu
+ * (AdminTasks.js:212 `task.title || task.task_no`). Kopru, ZATEN elinde olan
+ * start/end_location_str'den okunabilir baslik turetir (push body'si ayni
+ * veriyi zaten kullaniyordu). Mobil admin gorevlerinde title dolu gelir ->
+ * fallback devreye girmez. Varchar zirhi: 255'e kirpilir.
  */
 
 // Best-effort push gonderimi. Hata firlatmaz (no-throw), cagiran kodu etkilemez.
@@ -149,6 +156,12 @@ async function internalBridgeRoutes(fastify) {
           });
       }
 
+      // A2 (2026-07-22): Dispatcher title gondermez -> adreslerden okunabilir
+      // baslik turet. Mobil gorevlerde title dolu -> fallback devreye girmez.
+      const derivedTitle = (
+        title || `${start_location_str} → ${end_location_str}`
+      ).slice(0, 255);
+
       // SORUN 2 ÇÖZÜMÜ: Numaratör ve INSERT adımları tek bir atomik PostgreSQL Transaction zırhına alınır!
       await client.query("BEGIN");
 
@@ -199,7 +212,7 @@ async function internalBridgeRoutes(fastify) {
           task_no,
           driver_id,
           vehicle_id,
-          title,
+          derivedTitle,
           description,
           start_location_str.slice(0, 255), // Varchar(255) kırpma zırhı
           end_location_str.slice(0, 255), // Varchar(255) kırpma zırhı
