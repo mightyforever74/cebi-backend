@@ -5159,6 +5159,23 @@ fastify.put(
       }
       const driverId = driverRows[0].id;
       const companyId = driverRows[0].company_id;
+      // FEAT-010 SS3.6 (v1.6) - tek-aktif-gorev sozlesmesi: is kurali ihlali
+      // sunucu cokusu DEGILDIR; 500 yerine 409 Conflict + anlasilir mesaj doner.
+      const { rows: activeRows } = await client.query(
+        "SELECT id, task_no FROM tasks WHERE driver_id = $1 AND status = 'in_progress' LIMIT 1",
+        [driverId]
+      );
+      if (activeRows.length > 0 && activeRows[0].id !== id) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({
+          error: "Conflict",
+          message:
+            "Aktif bir göreviniz var (" +
+            activeRows[0].task_no +
+            "). Yeni göreve başlamadan önce mevcut görevi tamamlayın veya geri çekin.",
+          active_task_no: activeRows[0].task_no,
+        });
+      }
       const { rows } = await client.query(
         "UPDATE tasks SET status = $1, actual_start = NOW(), updated_at = NOW() WHERE id = $2 AND driver_id = $3 RETURNING *",
         ["in_progress", id, driverId]
@@ -5199,6 +5216,17 @@ fastify.put(
       return { success: true, task: rows[0] };
     } catch (error) {
       await client.query("ROLLBACK");
+      // FEAT-010 SS3.6 - yaris durumu emniyeti: kontrol ile UPDATE arasinda baska
+      // istek in_progress yazdiysa uniq_driver_single_in_progress 23505 firlatir;
+      // bu da kural ihlalidir, 500 degil 409 doner.
+      if (error && error.code === "23505" && error.constraint === "uniq_driver_single_in_progress") {
+        return reply.code(409).send({
+          error: "Conflict",
+          message:
+            "Aktif bir göreviniz var. Yeni göreve başlamadan önce mevcut görevi tamamlayın veya geri çekin.",
+          active_task_no: null,
+        });
+      }
       request.log.error(error);
       return reply.code(500).send({ error: "Internal server error" });
     } finally {
