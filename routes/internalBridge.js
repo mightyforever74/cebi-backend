@@ -18,6 +18,21 @@
  * start/end_location_str'den okunabilir baslik turetir (push body'si ayni
  * veriyi zaten kullaniyordu). Mobil admin gorevlerinde title dolu gelir ->
  * fallback devreye girmez. Varchar zirhi: 255'e kirpilir.
+ *
+ * BUG-1 Spec v3 Faz A+B (2026-08-02): Zaman penceresi zinciri + overlap 409.
+ * - Payload'a scheduled_start / scheduled_end (ISO, UTC saat — DB kolonlari
+ *   timestamp WITHOUT tz, DB Etc/UTC kanitli) + override (bool) eklendi.
+ * - INSERT bu iki kolonu MUHURLER (onceden hic yazilmiyordu — 3-katman
+ *   eksiginin son halkasi).
+ * - CAKISMA DENETIMI (Validation Engine, dispatcher kanali): ayni vehicle_id
+ *   uzerinde aktif statulerdeki (assigned/accepted/in_progress/pending_review)
+ *   gorevlerle tsrange kesisimi -> HTTP 409 + conflict_metadata
+ *   {conflicting_task_no, overlap_minutes}. Denetim NUMARATORDEN ONCE kosulur
+ *   (409'da task_no sayaci yakilmaz). NULL pencereli eski gorevler muaftir
+ *   (karar 2b — idx_tasks_time_overlap predicate'iyle ayni sozlesme).
+ * - override=true (Mode 1 Advisory — "Gerekceli Onay") gelirse 409 atlanir;
+ *   conflict_metadata yine hesaplanir ve YANITTA doner ki enterprise/UI
+ *   FN-18 karar loguna (Faz C) muhurleyebilsin.
  */
 
 // Best-effort push gonderimi. Hata firlatmaz (no-throw), cagiran kodu etkilemez.
@@ -144,6 +159,11 @@ async function internalBridgeRoutes(fastify) {
         start_location_str, // SORUN 3 ÇÖZÜMÜ: Sözleşme gereği düz varchar(255) string metin gelir
         end_location_str, // SORUN 3 ÇÖZÜMÜ: Sözleşme gereği düz varchar(255) string metin gelir
         priority,
+        // BUG-1 Faz A: zaman penceresi zinciri (ISO string, UTC saat)
+        scheduled_start,
+        scheduled_end,
+        // BUG-1 Faz C on-hazirligi: Mode 1 "Gerekceli Onay" bayragi
+        override,
       } = request.body;
 
       if (!company_id || !start_location_str || !end_location_str) {
@@ -164,6 +184,53 @@ async function internalBridgeRoutes(fastify) {
 
       // SORUN 2 ÇÖZÜMÜ: Numaratör ve INSERT adımları tek bir atomik PostgreSQL Transaction zırhına alınır!
       await client.query("BEGIN");
+
+      // ── BUG-1 Faz B: CAKISMA DENETIMI (numaratorden ONCE — 409'da sayac yanmaz) ──
+      // Yalniz her iki pencere de doluysa kosulur (karar 2b: NULL'lar muaf).
+      let conflictMetadata = null;
+      if (vehicle_id && scheduled_start && scheduled_end) {
+        const { rows: confRows } = await client.query(
+          `SELECT task_no,
+                  ROUND(EXTRACT(EPOCH FROM (
+                    LEAST(scheduled_end, $3::timestamp) -
+                    GREATEST(scheduled_start, $2::timestamp)
+                  )) / 60.0)::int AS overlap_minutes
+           FROM tasks
+           WHERE vehicle_id = $1
+             AND status IN ('assigned','accepted','in_progress','pending_review')
+             AND scheduled_start IS NOT NULL
+             AND scheduled_end IS NOT NULL
+             AND tsrange(scheduled_start, scheduled_end) &&
+                 tsrange($2::timestamp, $3::timestamp)
+           ORDER BY scheduled_start ASC
+           LIMIT 1`,
+          [vehicle_id, scheduled_start, scheduled_end]
+        );
+        if (confRows.length > 0) {
+          conflictMetadata = {
+            conflicting_task_no: confRows[0].task_no,
+            overlap_minutes: confRows[0].overlap_minutes,
+          };
+          if (!override) {
+            await client.query("ROLLBACK");
+            fastify.log.warn(
+              { vehicle_id, conflictMetadata },
+              "[BridgeOverlapBlocked] Zaman penceresi cakismasi — 409"
+            );
+            return reply.status(409).send({
+              error: "Conflict",
+              message: `Bu araca belirtilen aralıkta atanmış görev var (${conflictMetadata.conflicting_task_no}, çakışma ~${conflictMetadata.overlap_minutes} dk).`,
+              conflict_metadata: conflictMetadata,
+            });
+          }
+          // override=true: Mode 1 Advisory — insan kurali deldi; metadata
+          // yanitla doner, FN-18 karar loguna muhurlenmesi cagiranin isi (Faz C).
+          fastify.log.info(
+            { vehicle_id, conflictMetadata },
+            "[BridgeOverlapOverride] Cakisma override ile gecildi (Gerekceli Onay)"
+          );
+        }
+      }
 
       // Sürücü Profil Kimliği Çeviri İstasyonu (users.id -> drivers.id)
       let driver_id = null;
@@ -200,13 +267,17 @@ async function internalBridgeRoutes(fastify) {
       )}`;
 
       // Güvenli public.tasks INSERT işlemi (Varchar veri tipi uyuşmazlığı tamamen çözüldü)
+      // BUG-1 Faz A: scheduled_start/end artik MUHURLENIR (null-safe — pencere
+      // gelmezse NULL kalir, overlap denetimi de zaten kosulmamis olur).
       const { rows: insertedTask } = await client.query(
         `INSERT INTO tasks (
           id, task_no, driver_id, vehicle_id, title, description, 
           start_location, end_location, priority, status, company_id, 
-          enterprise_dispatch_task_id, created_at, updated_at, distance_source
+          enterprise_dispatch_task_id, scheduled_start, scheduled_end,
+          created_at, updated_at, distance_source
          ) VALUES (
-          gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, 'assigned', $9, $10, NOW(), NOW(), 'manual'
+          gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, 'assigned', $9, $10,
+          $11::timestamp, $12::timestamp, NOW(), NOW(), 'manual'
          ) RETURNING id, task_no`,
         [
           task_no,
@@ -219,6 +290,8 @@ async function internalBridgeRoutes(fastify) {
           priority || "normal",
           company_id,
           enterprise_dispatch_task_id,
+          scheduled_start || null,
+          scheduled_end || null,
         ]
       );
 
@@ -239,6 +312,8 @@ async function internalBridgeRoutes(fastify) {
         success: true,
         taskId: insertedTask[0].id,
         taskNo: insertedTask[0].task_no,
+        // BUG-1: override ile gecilen cakisma varsa cagirana muhurlenmek uzere doner
+        conflict_metadata: conflictMetadata,
       });
     } catch (err) {
       await client.query("ROLLBACK"); // En ufak hatada geri çekil, numaratör sırasını koru!
