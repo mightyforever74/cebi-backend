@@ -3357,6 +3357,40 @@ fastify.post(
         }
       }
 
+      // BUG-1 Faz B-mobil (2026-08-02): zaman penceresi çakışma denetimi.
+      // Mobil admin kanalı SERT 409 — override YOKTUR (Spec v3 §B kanal ayrımı).
+      // Yalnız vehicle_id + her iki pencere doluysa koşulur (karar 2b: NULL muaf).
+      // Numaratörden ÖNCE koşulur — 409'da task_no sayacı yanmaz.
+      if (hasVehicle && scheduled_start && scheduled_end) {
+        const { rows: confRows } = await client.query(
+          `SELECT task_no,
+                  ROUND(EXTRACT(EPOCH FROM (
+                    LEAST(scheduled_end, $3::timestamp) -
+                    GREATEST(scheduled_start, $2::timestamp)
+                  )) / 60.0)::int AS overlap_minutes
+           FROM tasks
+           WHERE vehicle_id = $1
+             AND status IN ('assigned','accepted','in_progress','pending_review')
+             AND scheduled_start IS NOT NULL
+             AND scheduled_end IS NOT NULL
+             AND tsrange(scheduled_start, scheduled_end) &&
+                 tsrange($2::timestamp, $3::timestamp)
+           ORDER BY scheduled_start ASC
+           LIMIT 1`,
+          [vehicle_id, scheduled_start, scheduled_end]
+        );
+        if (confRows.length > 0) {
+          return reply.code(409).send({
+            error: "Conflict",
+            message: `Bu araca belirtilen aralıkta atanmış görev var (${confRows[0].task_no}, çakışma ~${confRows[0].overlap_minutes} dk).`,
+            conflict_metadata: {
+              conflicting_task_no: confRows[0].task_no,
+              overlap_minutes: confRows[0].overlap_minutes,
+            },
+          });
+        }
+      }
+
       // Multi-tenant task code: CCC-YY-NNNNN
       const year = new Date().getFullYear() % 100; // 25
 
@@ -3511,12 +3545,55 @@ fastify.put(
       }
 
       const { rows: existing } = await client.query(
-        "SELECT id FROM tasks WHERE id = $1 AND company_id = $2",
+        // BUG-1 Faz B-mobil: efektif araç hesabı için vehicle_id de çekilir
+        "SELECT id, vehicle_id FROM tasks WHERE id = $1 AND company_id = $2",
         [id, companyId]
       );
       if (existing.length === 0) {
         return reply.code(404).send({ error: "Task not found" });
       }
+      // BUG-1 Faz B-mobil (2026-08-02): UPDATE kanalında da SERT 409, override yok.
+      // Efektif değerler: araç = body ?? mevcut (COALESCE), pencereler = body
+      // değeri (düz SET — koddan kanıtlı). Kendisi hariç (id <> $4).
+      {
+        const effVehicleId =
+          vehicle_id != null && String(vehicle_id).trim() !== ""
+            ? vehicle_id
+            : existing[0].vehicle_id;
+        const effStart = scheduled_start || null;
+        const effEnd = scheduled_end || null;
+        if (effVehicleId && effStart && effEnd) {
+          const { rows: confRows } = await client.query(
+            `SELECT task_no,
+                  ROUND(EXTRACT(EPOCH FROM (
+                    LEAST(scheduled_end, $3::timestamp) -
+                    GREATEST(scheduled_start, $2::timestamp)
+                  )) / 60.0)::int AS overlap_minutes
+           FROM tasks
+           WHERE vehicle_id = $1
+             AND status IN ('assigned','accepted','in_progress','pending_review')
+             AND scheduled_start IS NOT NULL
+             AND scheduled_end IS NOT NULL
+             AND tsrange(scheduled_start, scheduled_end) &&
+                 tsrange($2::timestamp, $3::timestamp)
+             AND id <> $4
+             ORDER BY scheduled_start ASC
+             LIMIT 1`,
+            [effVehicleId, effStart, effEnd, id]
+          );
+          if (confRows.length > 0) {
+            return reply.code(409).send({
+              error: "Conflict",
+              message: `Bu araca belirtilen aralıkta atanmış görev var (${confRows[0].task_no}, çakışma ~${confRows[0].overlap_minutes} dk).`,
+              conflict_metadata: {
+                conflicting_task_no: confRows[0].task_no,
+                overlap_minutes: confRows[0].overlap_minutes,
+              },
+            });
+          }
+        }
+      }
+
       const wpJson = Array.isArray(waypoints)
         ? JSON.stringify(waypoints)
         : null;
