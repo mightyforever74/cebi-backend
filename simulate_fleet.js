@@ -23,7 +23,12 @@
  * eski keepalive'a DOKUNULMAZ.
  *
  * KULLANIM: cd /opt/fleet/backend-staging && \
- *   pm2 start simulate_fleet.js --name fleet-sim-v3 [-- --interval 30]
+ *   pm2 start simulate_fleet.js --name fleet-sim-v3 [-- --interval 30 --dwell 60]
+ *
+ * v3.1 (GOZLEM-8, 04.08, Cem onayli D1/D2/D3): iki bacakli surus —
+ * konum -> pickup (DWELL yukleme molasi, --dwell sn, vars. 60) -> dropoff.
+ * Taze konum pickup'a <= 200m ise bacak-1 atlanir (yerinde sayma onlemi).
+ * Bacaklar duz cizgi (haversine) — HERE geometrisi bilinçli kapsam disi.
  */
 
 const path = require("path");
@@ -39,6 +44,9 @@ function arg(name, def) {
 const TICK_S = Math.max(10, parseInt(arg("interval", "30"), 10));
 const DISCOVERY_MS = 60 * 1000;
 const FRESH_RESUME_MIN = 10;
+// v3.1 (GOZLEM-8): pickup yukleme molasi + bacak-1 atlama esigi
+const DWELL_S = Math.max(0, parseInt(arg("dwell", "60"), 10));
+const PICKUP_SKIP_M = 200;
 
 // Sirket-bazli us koordinatlari (hic-konumsuz arac seed'i - Cem rotusu #1)
 const COMPANY_BASES = {
@@ -87,7 +95,8 @@ function numPair(o) {
 
 const client = new Client({ connectionString: process.env.DATABASE_URL });
 // device_id -> durum
-// { mode, plate, style, offsetS, nextDueMs, pos, vKmh, dest, taskNo, arrived, lastKnown, seeded }
+// { mode, plate, style, offsetS, nextDueMs, pos, vKmh, dest, taskNo, arrived, lastKnown, seeded,
+//   legs (v3.1 kalan bacak hedefleri), dwellUntilMs (v3.1 yukleme molasi bitisi) }
 const fleet = new Map();
 
 async function discover() {
@@ -131,6 +140,7 @@ async function discover() {
         nextDueMs: now + (h % TICK_S) * 1000,
         mode: "keepalive", pos: null, vKmh: 0, dest: null, taskNo: null,
         arrived: false, lastKnown: null, seeded: false, company: v.company,
+        legs: [], dwellUntilMs: 0,
       };
       fleet.set(id, st);
       console.log(`[v3] filo+ ${v.plate_no} (${id}) stil=${st.style.name} ofset=${st.offsetS}s`);
@@ -143,17 +153,26 @@ async function discover() {
       const fresh = st.lastKnown && (now - new Date(st.lastKnown.time).getTime()) < FRESH_RESUME_MIN * 60 * 1000;
       st.mode = "hareket";
       st.taskNo = mv.taskNo;
-      st.dest = mv.dest;
       st.pos = fresh ? { lat: st.lastKnown.lat, lng: st.lastKnown.lng } : { ...mv.origin };
+      // v3.1: bacak kuyrugu — taze konum pickup'a > PICKUP_SKIP_M ise
+      // [pickup, dropoff]; degilse (ya da pickup'tan doguyorsa) [dropoff]
+      // (eski davranisla birebir — regresyon yok).
+      st.legs = fresh && havM(st.pos, mv.origin) > PICKUP_SKIP_M
+        ? [{ ...mv.origin }, { ...mv.dest }]
+        : [{ ...mv.dest }];
+      st.dest = st.legs.shift();
+      st.dwellUntilMs = 0;
       st.vKmh = 0;
       st.arrived = false;
-      console.log(`[v3] HAREKET ${st.plate} gorev=${mv.taskNo} baslangic=${fresh ? "son-konum" : "pickup"} hedefe=${(havM(st.pos, st.dest) / 1000).toFixed(1)}km`);
+      console.log(`[v3.1] HAREKET ${st.plate} gorev=${mv.taskNo} baslangic=${fresh ? "son-konum" : "pickup"} bacak=1/${st.legs.length + 1} hedefe=${(havM(st.pos, st.dest) / 1000).toFixed(1)}km`);
     } else if (!mv && st.mode === "hareket") {
       st.mode = "keepalive";
       console.log(`[v3] KEEPALIVE ${st.plate} (gorev bitti/cekildi)`);
-      st.taskNo = null; st.dest = null; st.arrived = false;
+      st.taskNo = null; st.dest = null; st.arrived = false; st.legs = []; st.dwellUntilMs = 0;
     } else if (mv && st.mode === "hareket" && mv.taskNo !== st.taskNo) {
-      st.taskNo = mv.taskNo; st.dest = mv.dest; st.arrived = false;
+      // v3.1 basitlestirme (bilincli): surus ortasinda gorev degisirse
+      // dogrudan dropoff'a gidilir (bacak-1 tekrar kurulmaz).
+      st.taskNo = mv.taskNo; st.dest = { ...mv.dest }; st.legs = []; st.dwellUntilMs = 0; st.arrived = false;
       console.log(`[v3] ROTA GUNCELLENDI ${st.plate} gorev=${mv.taskNo}`);
     }
   }
@@ -174,6 +193,14 @@ async function writeLoc(deviceId, p, speed) {
 async function tickDevice(id, st) {
   if (st.mode === "hareket" && st.dest) {
     if (st.arrived) return writeLoc(id, st.pos, 0);
+    // v3.1: yukleme molasi — pickup'ta hiz-0 bekleme, sure dolunca bacak-2
+    if (st.dwellUntilMs && Date.now() < st.dwellUntilMs) {
+      return writeLoc(id, st.pos, 0);
+    }
+    if (st.dwellUntilMs) {
+      st.dwellUntilMs = 0;
+      console.log(`[v3.1] TESLIMATA CIKIS ${st.plate} gorev=${st.taskNo}`);
+    }
     const remain = havM(st.pos, st.dest);
     const s = st.style;
     if (st.vKmh < s.min) st.vKmh = Math.min(s.min, st.vKmh + 12);
@@ -185,9 +212,17 @@ async function tickDevice(id, st) {
     if (stepM >= remain) {
       st.vKmh = (remain / TICK_S) * 3.6;
       st.pos = { ...st.dest };
-      st.arrived = true;
       await writeLoc(id, st.pos, st.vKmh);
-      console.log(`[v3] VARIS ${st.plate} gorev=${st.taskNo} son-adim=${st.vKmh.toFixed(1)}km/h`);
+      if (st.legs && st.legs.length > 0) {
+        // v3.1: PICKUP varisi — yukleme molasi, sonra bacak-2 (dropoff)
+        st.dest = st.legs.shift();
+        st.dwellUntilMs = Date.now() + DWELL_S * 1000;
+        st.vKmh = 0;
+        console.log(`[v3.1] PICKUP VARIS ${st.plate} gorev=${st.taskNo} yukleme=${DWELL_S}s sonra teslimata ${(havM(st.pos, st.dest) / 1000).toFixed(1)}km`);
+      } else {
+        st.arrived = true;
+        console.log(`[v3] VARIS ${st.plate} gorev=${st.taskNo} son-adim=${st.vKmh.toFixed(1)}km/h`);
+      }
       return;
     }
     st.pos = step(st.pos, brg(st.pos, st.dest), stepM);
