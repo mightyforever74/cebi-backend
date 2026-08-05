@@ -132,4 +132,41 @@ module.exports = async function (fastify) {
       client.release();
     }
   });
+
+  // PUT /api/superadmin/subscriptions/companies/:id/quota — manuel kota + ZORUNLU muhur
+  // (Spec S4 Sayfa 4 "Guncelle & Muhurle"; mevcut companies PUT'una dokunulmadi.)
+  fastify.put('/api/superadmin/subscriptions/companies/:id/quota', { preHandler: [fastify.authenticate] }, async (request, reply) => {
+    if (!guard(request, reply)) return;
+    const { id } = request.params;
+    const newMax = Number(request.body && request.body.max_vehicles);
+    const reason = (request.body && request.body.reason) || null;
+    if (!Number.isInteger(newMax) || newMax < 0) {
+      return reply.code(400).send({ error: 'Bad Request', message: 'max_vehicles pozitif tamsayi olmali' });
+    }
+    if (!reason || String(reason).trim().length < 5) {
+      return reply.code(400).send({ error: 'Bad Request', message: 'reason zorunlu (min 5 karakter) — muhursuz manuel degisiklik yok' });
+    }
+    const client = await fastify.pg.connect();
+    try {
+      await client.query('BEGIN');
+      const cur = await client.query('SELECT max_vehicles, name FROM companies WHERE id = $1 FOR UPDATE', [id]);
+      if (cur.rowCount === 0) { await client.query('ROLLBACK'); return reply.code(404).send({ error: 'Not Found' }); }
+      const oldMax = cur.rows[0].max_vehicles;
+      await client.query('UPDATE companies SET max_vehicles = $1 WHERE id = $2', [newMax, id]);
+      await client.query(
+        `INSERT INTO subscription_audit_logs (company_id, action, reason, metadata, changed_by)
+         VALUES ($1, 'quota_manual_update', $2,
+                 jsonb_build_object('old_max_vehicles', $3::int, 'new_max_vehicles', $4::int), $5)`,
+        [id, reason, oldMax, newMax, request.user.id]
+      );
+      await client.query('COMMIT');
+      return { updated: { company: cur.rows[0].name, old_max_vehicles: oldMax, new_max_vehicles: newMax } };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      request.log.error({ err }, 'manual quota update failed');
+      return reply.code(500).send({ error: 'Internal Server Error' });
+    } finally {
+      client.release();
+    }
+  });
 };
