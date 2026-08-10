@@ -534,6 +534,7 @@ async function sendStopEventEmail(fastify, { taskId, eventId, stopId, type }) {
 const adminFuelRoutes = require("./routes/adminFuel"); // Mevcut route import'larının yanına ekle
 fastify.register(require("./routes/superadmin.companies"));
 fastify.register(require("./routes/superadmin.subscriptions")); // FEAT-SaaS S2-E2
+fastify.register(require("./routes/auth.publicSignup")); // FEAT-SAAS-2 S-O1
 fastify.register(require("./routes/fuel"), { prefix: "/api/fuel" });
 fastify.register(require("./routes/trips"));
 fastify.register(adminFuelRoutes, { prefix: "/api/admin" }); // Mevcut app.use satırlarının yanına ekle
