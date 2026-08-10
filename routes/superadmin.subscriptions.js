@@ -152,6 +152,10 @@ module.exports = async function (fastify) {
       const cur = await client.query('SELECT max_vehicles, name FROM companies WHERE id = $1 FOR UPDATE', [id]);
       if (cur.rowCount === 0) { await client.query('ROLLBACK'); return reply.code(404).send({ error: 'Not Found' }); }
       const oldMax = cur.rows[0].max_vehicles;
+      if (newMax === oldMax) {
+        await client.query('ROLLBACK');
+        return reply.code(400).send({ error: 'Bad Request', message: 'Yeni kota mevcut kotayla ayni — no-op muhur atilmaz' });
+      }
       await client.query('UPDATE companies SET max_vehicles = $1 WHERE id = $2', [newMax, id]);
       await client.query(
         `INSERT INTO subscription_audit_logs (company_id, action, reason, metadata, changed_by)
