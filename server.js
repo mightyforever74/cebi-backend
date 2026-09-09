@@ -108,9 +108,19 @@ async function saveLocationData(deviceId, data) {
     // Speed: firmware v4.3.2+ sends speed_kmh, older sends speed (knots)
     const speed = data.speed_kmh ?? data.speed ?? 0;
 
+    // 0. Resolve company_id from linked vehicle (read path + tenant filter need it)
+    let companyId = null;
+    try {
+      const vres = await client.query(
+        "SELECT company_id FROM vehicles WHERE esp32_device_id = $1 LIMIT 1",
+        [deviceId]
+      );
+      if (vres.rows.length > 0) companyId = vres.rows[0].company_id;
+    } catch (e) { /* location yazimini asla bloklama */ }
+
     // 1. Insert location data
     await client.query(
-      "INSERT INTO locations (time, device_id, latitude, longitude, speed, heading, altitude, accuracy, satellite_count, hdop, accel_x, accel_y, accel_z) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+      "INSERT INTO locations (time, device_id, latitude, longitude, speed, heading, altitude, accuracy, satellite_count, hdop, accel_x, accel_y, accel_z, company_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
       [
         timestamp,
         deviceId,
@@ -125,6 +135,7 @@ async function saveLocationData(deviceId, data) {
         data.accel_x || null,
         data.accel_y || null,
         data.accel_z || null,
+        companyId,
       ]
     );
 
