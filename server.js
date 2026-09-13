@@ -2397,6 +2397,16 @@ fastify.delete(
 
     const client = await fastify.pg.connect();
     try {
+      // Check if vehicle exists and belongs to company
+      const { rows: existing } = await client.query(
+        "SELECT id FROM vehicles WHERE id = $1 AND company_id = $2",
+        [id, companyId]
+      );
+
+      if (existing.length === 0) {
+        return reply.code(404).send({ error: "Vehicle not found" });
+      }
+
       // Check if vehicle has active tasks
       const { rows: activeTasks } = await client.query(
         `SELECT id FROM tasks WHERE vehicle_id = $1 AND status IN ('assigned', 'in_progress')`,
@@ -2432,16 +2442,6 @@ fastify.delete(
         });
       }
       // === /devices.vehicle_id FK üzerinden ===
-
-      // Check if vehicle exists and belongs to company
-      const { rows: existing } = await client.query(
-        "SELECT id FROM vehicles WHERE id = $1 AND company_id = $2",
-        [id, companyId]
-      );
-
-      if (existing.length === 0) {
-        return reply.code(404).send({ error: "Vehicle not found" });
-      }
 
       // Remove vehicle assignment from drivers
       await client.query(
@@ -3069,6 +3069,15 @@ fastify.delete(
 
     const client = await fastify.pg.connect();
     try {
+      // SEC: ownership first (cross-tenant oracle fix, 13.09.2026)
+      const { rows: ownRows } = await client.query(
+        "SELECT id FROM drivers WHERE id = $1 AND company_id = $2",
+        [id, companyId]
+      );
+      if (ownRows.length === 0) {
+        return reply.code(404).send({ error: "Driver not found" });
+      }
+
       // Check if driver has active tasks
       const { rows: activeTasks } = await client.query(
         `SELECT id FROM tasks WHERE driver_id = $1 AND status IN ('assigned', 'in_progress')`,
@@ -6499,6 +6508,16 @@ fastify.delete(
 
     const client = await fastify.pg.connect();
     try {
+      // SEC: task must belong to caller's company (13.09.2026)
+      if (role !== "super_admin") {
+        const { rows: own } = await client.query(
+          "SELECT id FROM tasks WHERE id = $1 AND company_id = $2",
+          [id, request.companyId]
+        );
+        if (own.length === 0) {
+          return reply.code(404).send({ error: "Task not found" });
+        }
+      }
       await client.query(
         `UPDATE public_tracking_tokens SET is_revoked = true WHERE task_id = $1 AND is_revoked = false`,
         [id]
