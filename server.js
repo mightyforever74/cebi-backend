@@ -1261,6 +1261,55 @@ fastify.put(
 // ALIAS ENDPOINTS (user -> users uyumlulugu)
 // ============================================
 
+// GET /api/user/profile — self-scoped; company_name for dispatcher/mobile
+fastify.get(
+  "/api/user/profile",
+  {
+    preHandler: [fastify.authenticate],
+  },
+  async (request, reply) => {
+    const userId = request.user.id;
+    try {
+      const result = await fastify.pg.query(
+        `SELECT u.id, u.email, u.role, u.first_name, u.last_name, u.phone,
+                u.language, u.company_id, c.name AS company_name
+         FROM users u
+         LEFT JOIN companies c ON c.id = u.company_id
+         WHERE u.id = $1`,
+        [userId]
+      );
+      if (result.rows.length === 0) {
+        return reply.code(404).send({ error: "User not found" });
+      }
+      const row = result.rows[0];
+      // Mobile AdminSettings/EditProfile: firstName || first_name; PUT wraps { user }.
+      // Dispatcher BasicInfo reads firstName/email/phone on the JSON root.
+      const user = {
+        ...row,
+        firstName: row.first_name,
+        lastName: row.last_name,
+      };
+      return {
+        user,
+        id: row.id,
+        email: row.email,
+        role: row.role,
+        first_name: row.first_name,
+        last_name: row.last_name,
+        firstName: row.first_name,
+        lastName: row.last_name,
+        phone: row.phone,
+        language: row.language,
+        company_id: row.company_id,
+        company_name: row.company_name,
+      };
+    } catch (err) {
+      request.log.error(err);
+      return reply.code(500).send({ error: "Failed to get profile" });
+    }
+  }
+);
+
 // PUT /api/user/profile -> /api/users/profile alias
 fastify.put(
   "/api/user/profile",
