@@ -164,6 +164,7 @@ async function internalBridgeRoutes(fastify) {
         scheduled_end,
         // BUG-1 Faz C on-hazirligi: Mode 1 "Gerekceli Onay" bayragi
         override,
+        created_by_user_id,
       } = request.body;
 
       if (!company_id || !start_location_str || !end_location_str) {
@@ -274,17 +275,17 @@ async function internalBridgeRoutes(fastify) {
           id, task_no, driver_id, vehicle_id, title, description, 
           start_location, end_location, priority, status, company_id, 
           enterprise_dispatch_task_id, scheduled_start, scheduled_end,
-          created_at, updated_at, distance_source
+          created_by, created_at, updated_at, distance_source
          ) VALUES (
           gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, 'assigned', $9, $10,
-          $11::timestamp, $12::timestamp, NOW(), NOW(), 'manual'
+          $11::timestamp, $12::timestamp, $13, NOW(), NOW(), 'manual'
          ) RETURNING id, task_no`,
         [
           task_no,
           driver_id,
           vehicle_id,
           derivedTitle,
-          description,
+          description == null ? null : description,
           start_location_str.slice(0, 255), // Varchar(255) kırpma zırhı
           end_location_str.slice(0, 255), // Varchar(255) kırpma zırhı
           priority || "normal",
@@ -292,6 +293,7 @@ async function internalBridgeRoutes(fastify) {
           enterprise_dispatch_task_id,
           scheduled_start || null,
           scheduled_end || null,
+          created_by_user_id || null,
         ]
       );
 
