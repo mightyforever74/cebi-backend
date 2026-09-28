@@ -36,18 +36,23 @@ select company_id, alert_type, count(*) from alerts
 | task_withdrawn | 2 |
 | TEST | 1 |
 
-Dobbe staging’de **speeding / harsh_brake yok**. SOS bu şirkette yok (1 SOS başka şirkette).
+Bu anlık görüntüde Dobbe’de speeding / harsh_brake yoktu. Kanıt satırları §7’de eklendi ve **silinmedi**.
 
 ```sql
 select count(*) from alerts
  where alert_type is null or alert_type <> lower(trim(alert_type));
 ```
 
-**non_normalized = 2** (`SOS`, `TEST`).
+**non_normalized = 2** — `lower(trim(alert_type))` ile aynı değil:
 
-Prod (salt-okunur, karşılaştırma): Dobbe `harsh_brake`×1 + `speeding`×1, tarih **2026-05-06**. Staging’e kopyalanmamış.
+| Şirket | alert_type | gün | ne |
+|---|---|---|---|
+| Dobbe Transport | `TEST` | 2026-04-07 | büyük harf; açıklama boş. Manifestte yok. |
+| Tulip Lojistik | `SOS` | 2026-04-07 | büyük harf. Açıklama “SOS: Test Sürücü … Test SOS - acil durum”. Manifest `sos` (küçük); harita `lower+trim` ile `SOS` sayar, driving sayacına girmez. |
 
-JSON’da olmayan canlı tipler: `gps_odometer_deviation`, `TEST`.
+Prod (salt-okunur, karşılaştırma): Dobbe `harsh_brake`×1 + `speeding`×1, tarih **2026-05-06**.
+
+Manifestte (`adminAlerts.types`) olmayan DB tipleri: `gps_odometer_deviation` (staging 3 satır), `TEST` (1 satır, yukarıdaki). İkisi de `ALERT_TYPE_MAP` dışında; sayaçlara girmez, bir kez warn.
 
 ---
 
@@ -149,12 +154,44 @@ Dobbe `demo@` + `GET /api/reports/drivers/performance?days=365` (sır yok):
 | Anna Jansen | 0 | 0 | 0 | 1 |
 | Mehmet Yilmaz | 0 | 0 | 0 | 1 |
 
-**IMPACT = 0** (sabit, beklenen). **HARD_BRAKE / OVERSPEED = 0** çünkü staging Dobbe’de `harsh_brake`/`speeding` satırı yok (sorgu §1). Prod’daki 2 satır 2026-05-06 ve staging’de yok. Sayaçlar ayrıca görev penceresine (`actual_start`…`actual_end`) bağlı; tip eşleşmesi olsa bile pencere dışı satır sayılmaz.
+Bu çağrı **kanıt INSERT’inden önce**. IMPACT 0. HARD_BRAKE / OVERSPEED 0 çünkü o anda Dobbe’de `harsh_brake` / `speeding` yoktu. Sonraki kanıt: §7.
+
+---
+
+## 7. Staging kanıt satırları (silinmedi)
+
+DEMO_OLUSTURMA §4.7 yöntem C — `alerts` hypertable, `ts_insert_blocker`:
+
+```sql
+BEGIN;
+SET LOCAL session_replication_role = 'replica';
+-- speeding + harsh_brake INSERT … RETURNING
+COMMIT;
+```
+
+Hedef: Dobbe `efbaa346-…`, araç BX-TR-42 `b1b2b3b4-…0001` (Pieter van den Berg), `created_at = now()`, `is_resolved = false`, `description = '[TEST counters 28 Eyl]'`.
+
+| alert_type | severity | created_at (DB) | is_resolved |
+|---|---|---|---|
+| speeding | warning | 2026-09-28 11:22:36 | false |
+| harsh_brake | warning | 2026-09-28 11:22:36 | false |
+
+Pencere: Pieter’in `TLP-26-00016` (`in_progress`, `actual_end` NULL) `now()`’u kapsar; `COUNT DISTINCT` aynı alarmı bir kez sayar.
+
+`GET /api/reports/drivers/performance?days=365` (staging, Dobbe `demo@`, sır yok):
+
+| Sürücü | hard_brake_count | overspeed_count | impact_count | total_alerts | driving_score |
+|---|---|---|---|---|---|
+| Pieter van den Berg | **1** | **1** | **0** | 3 | 89 |
+| Jan de Vries | 0 | 0 | 0 | 0 | |
+| Anna Jansen | 0 | 0 | 0 | 1 | |
+| Mehmet Yilmaz | 0 | 0 | 0 | 1 | |
+
+`impact_count` 0 sabit. Satırlar staging’de duruyor; silinmedi.
 
 ---
 
 ## Kapsam dışı
 
 - main merge, production docker, sürüm bump — Cem onayı
-- Staging’e speeding/harsh_brake INSERT
 - `HARD_TURN` / `HARD_ACCEL` için canlı eşleme (yok)
