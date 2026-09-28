@@ -1,4 +1,9 @@
 // routes/reports.js — TulipFleet Operations Report
+const {
+  sqlAlertTypeFilter,
+  warnUnmappedAlertTypes,
+} = require("../services/alerts/alertTypes");
+
 module.exports = async function(fastify) {
   fastify.get("/api/reports/operations", {
     preHandler: [fastify.authenticate],
@@ -134,12 +139,14 @@ module.exports = async function(fastify) {
             WHERE t.status = 'completed'
           ), 0), 1)::numeric as total_km,
 
-          -- Alert metrikleri (araç üzerinden)
-          COUNT(DISTINCT a.id) FILTER (WHERE a.alert_type = 'HARD_BRAKE')::int as hard_brake_count,
-          COUNT(DISTINCT a.id) FILTER (WHERE a.alert_type = 'HARD_TURN' OR a.alert_type = 'SHARP_TURN')::int as hard_turn_count,
-          COUNT(DISTINCT a.id) FILTER (WHERE a.alert_type = 'HARD_ACCEL')::int as hard_accel_count,
-          COUNT(DISTINCT a.id) FILTER (WHERE a.alert_type = 'OVERSPEED')::int as overspeed_count,
-          COUNT(DISTINCT a.id) FILTER (WHERE a.alert_type = 'IMPACT')::int as impact_count,
+          -- Alert metrikleri (araç üzerinden). Types from ALERT_TYPE_MAP
+          -- (harsh_brake→HARD_BRAKE, speeding→OVERSPEED). IMPACT has no live
+          -- counterpart — filter is FALSE so impact_count stays 0 (mobile).
+          COUNT(DISTINCT a.id) FILTER (WHERE ${sqlAlertTypeFilter("a.alert_type", "HARD_BRAKE")})::int as hard_brake_count,
+          COUNT(DISTINCT a.id) FILTER (WHERE ${sqlAlertTypeFilter("a.alert_type", "HARD_TURN")})::int as hard_turn_count,
+          COUNT(DISTINCT a.id) FILTER (WHERE ${sqlAlertTypeFilter("a.alert_type", "HARD_ACCEL")})::int as hard_accel_count,
+          COUNT(DISTINCT a.id) FILTER (WHERE ${sqlAlertTypeFilter("a.alert_type", "OVERSPEED")})::int as overspeed_count,
+          COUNT(DISTINCT a.id) FILTER (WHERE ${sqlAlertTypeFilter("a.alert_type", "IMPACT")})::int as impact_count,
           COUNT(DISTINCT a.id)::int as total_alerts
 
         FROM drivers d
@@ -155,9 +162,17 @@ module.exports = async function(fastify) {
         ORDER BY completed_tasks DESC, total_alerts ASC
       `, [company_id, from]);
 
-      // Sürüş skoru hesapla (100km başına normalize)
-      // Formül: Baz 100 - HARD_BRAKE×3 - HARD_TURN×2 - HARD_ACCEL×2 (100km normalize)
-      // Sınırlılık: olay şiddeti (g-force) hesaba katılmıyor, trafik/hava bağlamı yok
+      const distinctTypes = await fastify.pg.query(
+        `SELECT DISTINCT alert_type FROM alerts WHERE company_id = $1 AND created_at >= $2`,
+        [company_id, from]
+      );
+      warnUnmappedAlertTypes(
+        distinctTypes.rows.map((r) => r.alert_type),
+        request.log
+      );
+
+      // Sürüş skoru: baz 100 − hard_brake_count×3 − hard_turn_count×2 − hard_accel_count×2
+      // (100 km normalize). Olay şiddeti (g-force) ve trafik/hava yok.
       const drivers = rows.map(d => {
         const km = parseFloat(d.total_km) || 0;
         let driving_score = null;
