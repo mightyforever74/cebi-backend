@@ -8,6 +8,57 @@ const PUBLIC_TRACK_JSON_404 = { error: "Invalid or expired link" };
 const PUBLIC_TRACK_CLOSED = new Set(["completed", "cancelled", "withdrawn"]);
 const PUBLIC_TRACK_DUMMY = "0".repeat(32);
 
+// staging fleet_tracking_staging tasks_status_check (2026-09-29):
+// pending, pending_review, accepted, assigned, rejected,
+// in_progress, completed, cancelled, withdrawn.
+// The only value in that set that means the vehicle is driving is in_progress.
+const PUBLIC_TRACK_LIVE = new Set(["in_progress"]);
+
+const PUBLIC_TRACK_STATUS_TR = {
+  pending: "Bekliyor",
+  pending_review: "İnceleniyor",
+  accepted: "Kabul Edildi",
+  assigned: "Atandı",
+  rejected: "Reddedildi",
+  in_progress: "Devam Ediyor",
+  completed: "Tamamlandı",
+  cancelled: "İptal edildi",
+  withdrawn: "Geri çekildi",
+};
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function stripInternalIds(value) {
+  if (Array.isArray(value)) return value.map(stripInternalIds);
+  if (!value || typeof value !== "object" || value instanceof Date) return value;
+  const out = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "id" || key.endsWith("_id")) continue;
+    out[key] = stripInternalIds(child);
+  }
+  return out;
+}
+
+function publicHtmlShell(lang, title, inner) {
+  return (
+    "<!DOCTYPE html><html lang=\"" +
+    escapeHtml(lang) +
+    "\"><head><meta charset=\"utf-8\">" +
+    "<meta name=\"referrer\" content=\"no-referrer\">" +
+    "<title>" +
+    escapeHtml(title) +
+    "</title></head><body style=\"font-family:Arial,sans-serif;text-align:center;padding:60px;\">" +
+    inner +
+    "</body></html>"
+  );
+}
+
 function publicTrackUrl(token) {
   const raw = process.env.PUBLIC_TRACK_BASE_URL;
   const base =
@@ -221,7 +272,7 @@ async function publicTrackJson(fastify, request, reply) {
 
     // Task bilgisi
     const { rows: taskRows } = await client.query(
-      `SELECT t.id, t.task_no, t.status, t.title, t.start_location, t.end_location,
+      `SELECT t.task_no, t.status, t.title, t.start_location, t.end_location,
               t.waypoints, t.actual_start, t.actual_end,
               v.plate_no as vehicle_plate
        FROM tasks t
@@ -233,31 +284,36 @@ async function publicTrackJson(fastify, request, reply) {
       return reply.code(404).send(PUBLIC_TRACK_JSON_404);
 
     const task = taskRows[0];
+    const live = PUBLIC_TRACK_LIVE.has(String(task.status || ""));
 
-    // Events
+    // Events — public fields only (no event id, no stop id)
     const { rows: events } = await client.query(
-      `SELECT id, type, message, stop_id, created_at
+      `SELECT type, message, created_at
        FROM task_events WHERE task_id = $1
        ORDER BY created_at ASC LIMIT 200`,
       [String(taskId)]
     );
 
-    // Son konum (vehicle üzerinden)
+    // Son konum yalnız araç yoldayken (PUBLIC_TRACK_LIVE).
     let lastLocation = null;
-    const { rows: vRows } = await client.query(
-      `SELECT v.esp32_device_id FROM vehicles v
-       JOIN tasks t ON t.vehicle_id = v.id
-       WHERE t.id = $1`,
-      [taskId]
-    );
-    if (vRows.length && vRows[0].esp32_device_id) {
-      const { rows: locRows } = await client.query(
-        `SELECT latitude, longitude, speed, heading, time
-         FROM locations WHERE device_id = $1
-         ORDER BY time DESC LIMIT 1`,
-        [vRows[0].esp32_device_id]
+    let vRows = [];
+    if (live) {
+      const { rows } = await client.query(
+        `SELECT v.esp32_device_id FROM vehicles v
+         JOIN tasks t ON t.vehicle_id = v.id
+         WHERE t.id = $1`,
+        [taskId]
       );
-      if (locRows.length) lastLocation = locRows[0];
+      vRows = rows;
+      if (vRows.length && vRows[0].esp32_device_id) {
+        const { rows: locRows } = await client.query(
+          `SELECT latitude, longitude, speed, heading, time
+           FROM locations WHERE device_id = $1
+           ORDER BY time DESC LIMIT 1`,
+          [vRows[0].esp32_device_id]
+        );
+        if (locRows.length) lastLocation = locRows[0];
+      }
     }
 
     // Waypoints parse
@@ -272,7 +328,7 @@ async function publicTrackJson(fastify, request, reply) {
 
     let eta = null;
 
-    const nextWp = getNextWaypoint(waypoints);
+    const nextWp = live ? getNextWaypoint(waypoints) : null;
 
     if (nextWp && lastLocation?.latitude && lastLocation?.longitude) {
       const wpLat = numOrNull(nextWp.latitude ?? nextWp.lat);
@@ -367,24 +423,25 @@ async function publicTrackJson(fastify, request, reply) {
       }
     }
 
-    return reply.send({
-      task: {
-        id: task.id,
-        task_no: task.task_no,
-        status: task.status,
-        title: task.title,
-        start_location: task.start_location,
-        end_location: task.end_location,
-        vehicle_plate: task.vehicle_plate,
-        actual_start: task.actual_start,
-        actual_end: task.actual_end,
-      },
-      waypoints,
-      events,
-      last_location: lastLocation,
-      eta,
-      updated_at: new Date().toISOString(),
-    });
+    return reply.send(
+      stripInternalIds({
+        task: {
+          task_no: task.task_no,
+          status: task.status,
+          title: task.title,
+          start_location: task.start_location,
+          end_location: task.end_location,
+          vehicle_plate: task.vehicle_plate,
+          actual_start: task.actual_start,
+          actual_end: task.actual_end,
+        },
+        waypoints,
+        events,
+        last_location: live ? lastLocation : null,
+        eta: live ? eta : null,
+        updated_at: new Date().toISOString(),
+      })
+    );
   } catch (err) {
     request.log.error(err);
     return reply.code(500).send({ error: "Internal server error" });
@@ -439,6 +496,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "Hareket bekleniyor",
     delayRisk: "GECİKME RİSKİ",
     noEta: "ETA hesaplanamıyor",
+    liveNote: "Araç yola çıktığında canlı konum burada görünecek",
   },
   en: {
     loading: "Loading...",
@@ -482,6 +540,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "Waiting for movement",
     delayRisk: "DELAY RISK",
     noEta: "ETA unavailable",
+    liveNote: "Live location appears here once the vehicle is on the way",
   },
   ku: {
     loading: "Tê barkirin...",
@@ -525,6 +584,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "Li benda tevgerê",
     delayRisk: "RÎSKA DERENGÎ",
     noEta: "ETA ne peyda ye",
+    liveNote: "Dem araç derket kir, cihê zindî li vir xuya dibe",
   },
   nl: {
     loading: "Laden...",
@@ -568,6 +628,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "Wachten op beweging",
     delayRisk: "VERTRAGINGSRISICO",
     noEta: "ETA niet beschikbaar",
+    liveNote: "De live locatie verschijnt hier zodra het voertuig onderweg is",
   },
   bg: {
     loading: "Зареждане...",
@@ -611,6 +672,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "Изчакване на движение",
     delayRisk: "РИСК ОТ ЗАКЪСНЕНИЕ",
     noEta: "ETA не е наличен",
+    liveNote: "Местоположението на живо се показва тук, когато автомобилът потегли",
   },
   it: {
     loading: "Caricamento...",
@@ -654,6 +716,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "In attesa di movimento",
     delayRisk: "RISCHIO RITARDO",
     noEta: "ETA non disponibile",
+    liveNote: "La posizione live compare qui quando il veicolo è in viaggio",
   },
   es: {
     loading: "Cargando...",
@@ -697,6 +760,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "Esperando movimiento",
     delayRisk: "RIESGO DE RETRASO",
     noEta: "ETA no disponible",
+    liveNote: "La ubicación en vivo aparece aquí cuando el vehículo está en camino",
   },
 };
 
@@ -721,13 +785,11 @@ async function publicTrackHtml(fastify, request, reply) {
   try {
     const taskId = await resolvePublicTracking(client, token);
     if (!taskId || !/^[A-Za-z0-9_-]+$/.test(String(token))) {
-      reply.type("text/html").code(404);
-      return (
-        '<html><body style="font-family:Arial;text-align:center;padding:60px;"><h1>' +
-        t.invalidLink +
-        "</h1><p>" +
-        t.contactCompany +
-        "</p></body></html>"
+      reply.type("text/html; charset=utf-8").code(404);
+      return publicHtmlShell(
+        lang,
+        "TulipFleet — " + t.invalidLinkShort,
+        "<h1>" + escapeHtml(t.invalidLink) + "</h1><p>" + escapeHtml(t.contactCompany) + "</p>"
       );
     }
 
@@ -735,8 +797,8 @@ async function publicTrackHtml(fastify, request, reply) {
       "SELECT task_no, title FROM tasks WHERE id = $1",
       [taskId]
     );
-    const taskTitle =
-      taskRows[0]?.task_no || taskRows[0]?.title || "TulipFleet";
+    const taskNo = taskRows[0]?.task_no || "";
+    const pageTitle = "TulipFleet — " + taskNo;
 
     const routeUrl =
       (request.routeOptions && request.routeOptions.url) ||
@@ -745,13 +807,14 @@ async function publicTrackHtml(fastify, request, reply) {
     const jsonPath = String(routeUrl).startsWith("/v/")
       ? "/v/" + token + ".json"
       : "/public/track/" + token + ".json";
-    reply.type("text/html");
+    reply.type("text/html; charset=utf-8");
     return `<!DOCTYPE html>
-<html lang="${lang}">
+<html lang="${escapeHtml(lang)}">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TulipFleet — ${taskTitle}</title>
+  <title>${escapeHtml(pageTitle)}</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>
   <style>
@@ -797,7 +860,7 @@ async function publicTrackHtml(fastify, request, reply) {
 <body>
   <div class="header">
     <ion-icon name="bus" style="font-size:22px;"></ion-icon>
-    <h1>TulipFleet — ${taskTitle}</h1>
+    <h1>${escapeHtml(pageTitle)}</h1>
     <span class="badge" id="statusBadge">${t.loading}</span>
     <select class="lang-select" onchange="location.href='?lang='+this.value">
       <option value="tr" ${lang === "tr" ? "selected" : ""}>🇹🇷 TR</option>
@@ -812,6 +875,7 @@ async function publicTrackHtml(fastify, request, reply) {
   <div class="content">
     <div id="map"></div>
     <div class="sidebar">
+      <div class="card" id="liveNote" hidden></div>
       <div class="card">
         <div class="card-title"><ion-icon name="timer-outline" style="vertical-align:middle;margin-right:6px;color:#5E72E4;"></ion-icon> ETA</div>
         <div id="etaInfo">-</div>
@@ -836,10 +900,13 @@ async function publicTrackHtml(fastify, request, reply) {
     const TOKEN = '${token}';
     const JSON_PATH = '${jsonPath}';
     const T = ${JSON.stringify(t)};
+    const STATUS_TR = ${JSON.stringify(PUBLIC_TRACK_STATUS_TR)};
+    const LIVE_STATUS = ${JSON.stringify({ in_progress: true })};
     const LOCALE = '${locale}';
     const map = L.map('map').setView([39.9, 32.8], 6);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution:'&copy; OpenStreetMap'
+      attribution:'&copy; OpenStreetMap',
+      referrerPolicy: 'no-referrer'
     }).addTo(map);
 
     let vehicleMarker = null;
@@ -862,22 +929,24 @@ async function publicTrackHtml(fastify, request, reply) {
         renderWaypoints(d.waypoints);
         renderEvents(d.events);
         renderETA(d.eta);
-        renderLocation(d.last_location, d.waypoints);
+        renderLocation(d.last_location, d.waypoints, d.task && d.task.status);
         document.getElementById('updateBar').textContent = tr('lastUpdate') + ': ' + new Date().toLocaleString(LOCALE);
       } catch(e) {
         document.getElementById('updateBar').textContent = tr('connError');
       }
     }
 
+    function statusLabel(s) { return STATUS_TR[s] || s; }
+
     function renderTask(task) {
       var s = task.status;
-      document.getElementById('statusBadge').textContent = tr(s) || s;
+      document.getElementById('statusBadge').textContent = statusLabel(s);
       document.getElementById('statusBadge').className = 'badge status-' + s;
       document.getElementById('taskInfo').innerHTML =
         '<div class="info-row"><span class="info-label">' + tr('taskNo') + '</span><span class="info-value">' + (task.task_no||'-') + '</span></div>' +
         '<div class="info-row"><span class="info-label">' + tr('vehicle') + '</span><span class="info-value">' + (task.vehicle_plate||'-') + '</span></div>' +
         '<div class="info-row"><span class="info-label">' + tr('route') + '</span><span class="info-value">' + (task.start_location||'') + ' → ' + (task.end_location||'') + '</span></div>' +
-        '<div class="info-row"><span class="info-label">' + tr('status') + '</span><span class="info-value"><span class="status-badge status-' + s + '">' + (tr(s)||s) + '</span></span></div>';
+        '<div class="info-row"><span class="info-label">' + tr('status') + '</span><span class="info-value"><span class="status-badge status-' + s + '">' + statusLabel(s) + '</span></span></div>';
     }
 
     function renderWaypoints(wps) {
@@ -911,7 +980,15 @@ async function publicTrackHtml(fastify, request, reply) {
       el.innerHTML = html;
     }
 
-    function renderLocation(loc, wps) {
+    function renderLocation(loc, wps, taskStatus) {
+      var note = document.getElementById('liveNote');
+      if (!LIVE_STATUS[taskStatus]) {
+        note.hidden = false;
+        note.textContent = T.liveNote;
+      } else {
+        note.hidden = true;
+        note.textContent = '';
+      }
       wpMarkers.forEach(function(m) { map.removeLayer(m); });
       wpMarkers = [];
       if (wps && wps.length) {
@@ -954,8 +1031,8 @@ async function publicTrackHtml(fastify, request, reply) {
 </html>`;
   } catch (err) {
     request.log.error(err);
-    reply.type("text/html").code(500);
-    return "<html><body><h1>" + t.serverError + "</h1></body></html>";
+    reply.type("text/html; charset=utf-8").code(500);
+    return publicHtmlShell(lang, "TulipFleet — " + t.serverError, "<h1>" + escapeHtml(t.serverError) + "</h1>");
   } finally {
     client.release();
   }
@@ -977,6 +1054,11 @@ const publicReadLimit = {
 };
 
 async function publicTrackRoutes(fastify) {
+  fastify.addHook("onRequest", async (_request, reply) => {
+    reply.header("X-Robots-Tag", "noindex, nofollow");
+    reply.header("Referrer-Policy", "no-referrer");
+    reply.header("Cache-Control", "no-store");
+  });
   await fastify.register(rateLimit, {
     global: false,
     max: 60,

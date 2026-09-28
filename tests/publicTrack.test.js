@@ -15,6 +15,31 @@ function hoursFromNow(hours) {
   return new Date(Date.now() + hours * 60 * 60 * 1000);
 }
 
+function statusFor(mode) {
+  if (mode === "completed") return "completed";
+  if (mode === "assigned") return "assigned";
+  return "in_progress";
+}
+
+function idKeys(value, found) {
+  if (Array.isArray(value)) {
+    value.forEach((item) => idKeys(item, found));
+    return found;
+  }
+  if (!value || typeof value !== "object") return found;
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "id" || key.endsWith("_id")) found.push(key);
+    idKeys(child, found);
+  }
+  return found;
+}
+
+function assertNoIndex(res) {
+  assert.equal(res.headers["x-robots-tag"], "noindex, nofollow");
+  assert.equal(res.headers["referrer-policy"], "no-referrer");
+  assert.equal(res.headers["cache-control"], "no-store");
+}
+
 function queryFor(mode) {
   return async function query(sql) {
     const s = sql.replace(/\s+/g, " ").trim();
@@ -32,9 +57,7 @@ function queryFor(mode) {
       };
     }
     if (s.includes("SELECT status FROM tasks")) {
-      return {
-        rows: [{ status: mode === "completed" ? "completed" : "in_progress" }],
-      };
+      return { rows: [{ status: statusFor(mode) }] };
     }
     if (s.includes("task_no, title")) {
       return { rows: [{ task_no: "T-1", title: "Delivery" }] };
@@ -44,12 +67,23 @@ function queryFor(mode) {
         rows: [
           {
             id: "task-1",
+            driver_id: "driver-1",
+            company_id: "company-1",
             task_no: "T-1",
-            status: "in_progress",
+            status: statusFor(mode),
             title: "Delivery",
             start_location: "A",
             end_location: "B",
-            waypoints: [],
+            waypoints: [
+              {
+                id: "wp-1",
+                vehicle_id: "veh-1",
+                name: "Pickup",
+                latitude: 41,
+                longitude: 29,
+                status: "pending",
+              },
+            ],
             actual_start: null,
             actual_end: null,
             vehicle_plate: "34-TEST",
@@ -57,8 +91,38 @@ function queryFor(mode) {
         ],
       };
     }
-    if (s.includes("FROM task_events")) return { rows: [] };
-    if (s.includes("esp32_device_id")) return { rows: [{ esp32_device_id: null }] };
+    if (s.includes("FROM task_events") && s.startsWith("SELECT")) {
+      return {
+        rows: [
+          {
+            id: "evt-1",
+            stop_id: "stop-1",
+            type: "TASK_STARTED",
+            message: "started",
+            created_at: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      };
+    }
+    if (s.includes("esp32_device_id")) {
+      return { rows: [{ esp32_device_id: "dev-1" }] };
+    }
+    if (s.includes("ORDER BY time DESC LIMIT 1")) {
+      return {
+        rows: [
+          {
+            latitude: 41.01,
+            longitude: 29.01,
+            speed: 40,
+            heading: 90,
+            time: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      };
+    }
+    if (s.includes("AVG(COALESCE(speed,0))")) return { rows: [{ avg_speed: 0 }] };
+    if (s.includes("LIMIT 2")) return { rows: [] };
+    if (s.includes("STOP_DELAYED")) return { rows: [] };
     throw new Error("unexpected sql: " + s);
   };
 }
@@ -117,7 +181,12 @@ test("valid token returns 200 on /v and the legacy path", async () => {
       "waypoints",
     ]);
     assert.equal(body.task.status, "in_progress");
-    assert.equal(body.last_location, null);
+    assert.equal(body.task.task_no, "T-1");
+    assert.equal(body.task.id, undefined);
+    assert.deepEqual(idKeys(body, []), []);
+    assert.ok(body.last_location);
+    assert.equal(body.last_location.latitude, 41.01);
+    assertNoIndex(res);
 
     const legacy = await app.inject({
       method: "GET",
@@ -127,8 +196,13 @@ test("valid token returns 200 on /v and the legacy path", async () => {
 
     const page = await app.inject({ method: "GET", url: "/v/" + TOKEN });
     assert.equal(page.statusCode, 200);
-    assert.match(page.headers["content-type"], /text\/html/);
+    assert.match(page.headers["content-type"], /text\/html;\s*charset=utf-8/i);
+    assert.match(page.body, /<meta charset="utf-8">/);
+    assert.match(page.body, /<meta name="referrer" content="no-referrer">/);
+    assert.match(page.body, /<title>TulipFleet — T-1<\/title>/);
+    assert.match(page.body, /referrerPolicy:\s*'no-referrer'/);
     assert.match(page.body, new RegExp("/v/" + TOKEN + "\\.json"));
+    assertNoIndex(page);
   } finally {
     await app.close();
   }
@@ -143,6 +217,7 @@ test("revoked token returns the same 404", async () => {
     });
     assert.equal(res.statusCode, 404);
     assert.deepEqual(res.json(), { error: "Invalid or expired link" });
+    assertNoIndex(res);
   } finally {
     await app.close();
   }
@@ -173,6 +248,54 @@ test("completed task returns the same 404", async () => {
     assert.deepEqual(res.json(), { error: "Invalid or expired link" });
   } finally {
     await app.close();
+  }
+});
+
+test("assigned task hides live location and the 404 page is utf-8", async () => {
+  const app = await buildApp("assigned");
+  try {
+    const res = await app.inject({
+      method: "GET",
+      url: "/v/" + TOKEN + ".json",
+    });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.equal(body.task.status, "assigned");
+    assert.equal(body.last_location, null);
+    assert.equal(body.eta, null);
+    assert.equal(body.waypoints[0].name, "Pickup");
+    assert.deepEqual(idKeys(body, []), []);
+    assertNoIndex(res);
+
+    const page = await app.inject({ method: "GET", url: "/v/" + TOKEN });
+    assert.equal(page.statusCode, 200);
+    assert.match(page.headers["content-type"], /charset=utf-8/i);
+    assert.match(page.body, /Araç yola çıktığında canlı konum burada görünecek/);
+    assert.match(page.body, /"assigned":"Atandı"/);
+  } finally {
+    await app.close();
+  }
+
+  const missing = await buildApp("missing");
+  try {
+    const html = await missing.inject({ method: "GET", url: "/v/" + TOKEN });
+    assert.equal(html.statusCode, 404);
+    assert.match(html.headers["content-type"], /text\/html;\s*charset=utf-8/i);
+    assert.match(html.body, /<meta charset="utf-8">/);
+    assert.match(html.body, /<title>TulipFleet — Link geçersiz<\/title>/);
+    assert.match(html.body, /Link geçersiz veya süresi dolmuş/);
+    assert.equal(html.body.includes("geÃ"), false);
+    assertNoIndex(html);
+
+    const legacy = await missing.inject({
+      method: "GET",
+      url: "/public/track/" + TOKEN,
+    });
+    assert.equal(legacy.statusCode, 404);
+    assert.match(legacy.headers["content-type"], /charset=utf-8/i);
+    assertNoIndex(legacy);
+  } finally {
+    await missing.close();
   }
 });
 
