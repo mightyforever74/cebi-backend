@@ -213,8 +213,14 @@ function trackProvider(fastify) {
   return fallbackProvider;
 }
 
+function publicRouteCache(routeJson) {
+  const nested = routeJson && routeJson.public_route;
+  if (!nested || typeof nested !== "object" || Array.isArray(nested)) return null;
+  return nested;
+}
+
 function cachedGeometry(routeJson) {
-  const geometry = routeJson && routeJson.geometry;
+  const geometry = publicRouteCache(routeJson) && publicRouteCache(routeJson).geometry;
   if (!Array.isArray(geometry) || geometry.length < 2) return null;
   return geometry;
 }
@@ -309,13 +315,15 @@ async function computeAndStoreRoute(client, taskId, route, provider, logger) {
   }
 
   const patch = {
-    origin: route.origin,
-    destination: route.destination,
-    geometry,
-    distance_m: Number.isFinite(result.distanceM) ? result.distanceM : null,
-    duration_s: Number.isFinite(result.durationSec) ? result.durationSec : null,
-    provider: "here",
-    computed_at: new Date().toISOString(),
+    public_route: {
+      origin: route.origin,
+      destination: route.destination,
+      geometry,
+      distance_m: Number.isFinite(result.distanceM) ? result.distanceM : null,
+      duration_s: Number.isFinite(result.durationSec) ? result.durationSec : null,
+      provider: "here",
+      computed_at: new Date().toISOString(),
+    },
   };
 
   try {
@@ -323,7 +331,11 @@ async function computeAndStoreRoute(client, taskId, route, provider, logger) {
       `UPDATE tasks
           SET route_json = COALESCE(route_json::jsonb, '{}'::jsonb) || $2::jsonb
         WHERE id = $1
-          AND (route_json IS NULL OR (route_json::jsonb)->'geometry' IS NULL)`,
+          AND (
+            route_json IS NULL
+            OR (route_json::jsonb)->'public_route' IS NULL
+            OR jsonb_typeof(((route_json::jsonb)->'public_route')->'geometry') IS DISTINCT FROM 'array'
+          )`,
       [taskId, JSON.stringify(patch)]
     );
   } catch (err) {

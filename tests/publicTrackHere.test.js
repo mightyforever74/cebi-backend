@@ -111,6 +111,7 @@ async function buildApp(options) {
           }
           if (s.startsWith("UPDATE")) {
             state.updates += 1;
+            state.updateSql = s;
             const patch = JSON.parse(params[1]);
             state.routeJson = Object.assign({}, state.routeJson || {}, patch);
             return { rows: [], rowCount: 1 };
@@ -132,10 +133,11 @@ async function getJson(app) {
   return res.json();
 }
 
-test("route is cached after the first call and a second call makes no HERE request", async () => {
+test("route is cached under public_route and a second call makes no HERE request", async () => {
   const { app, state } = await buildApp({
     status: "assigned",
     taskId: "route-cache-1",
+    routeJson: { distance: "18.5" },
   });
   try {
     const first = await getJson(app);
@@ -143,11 +145,22 @@ test("route is cached after the first call and a second call makes no HERE reque
     assert.equal(first.route.geometry.length, 3);
     assert.equal(state.hereCalls, 1);
     assert.equal(state.updates, 1);
-    assert.equal(state.routeJson.provider, "here");
-    assert.equal(state.routeJson.distance_m, 12000);
-    assert.equal(state.routeJson.duration_s, 1080);
-    assert.ok(state.routeJson.origin);
-    assert.ok(state.routeJson.computed_at);
+    assert.match(state.updateSql, /'public_route'/);
+    assert.equal(state.routeJson.distance, "18.5");
+    assert.equal(state.routeJson.provider, undefined);
+    assert.equal(state.routeJson.origin, undefined);
+    assert.equal(state.routeJson.destination, undefined);
+    assert.equal(state.routeJson.geometry, undefined);
+    assert.equal(state.routeJson.distance_m, undefined);
+    assert.equal(state.routeJson.duration_s, undefined);
+    assert.equal(state.routeJson.computed_at, undefined);
+    const cached = state.routeJson.public_route;
+    assert.equal(cached.provider, "here");
+    assert.equal(cached.distance_m, 12000);
+    assert.equal(cached.duration_s, 1080);
+    assert.equal(cached.geometry.length, 3);
+    assert.ok(cached.origin);
+    assert.ok(cached.computed_at);
 
     const second = await getJson(app);
     assert.equal(second.route.geometry.length, 3);
@@ -183,9 +196,13 @@ test("eta is only computed for in_progress and is cached for 60s", async () => {
     status: "assigned",
     taskId: "eta-assigned",
     routeJson: {
-      origin: { lat: 41.02, lng: 28.98, label: "Ambarli" },
-      destination: { lat: 40.99, lng: 29.03, label: "Kadikoy" },
-      geometry: GEOMETRY,
+      distance: "12",
+      public_route: {
+        origin: { lat: 41.02, lng: 28.98, label: "Ambarli" },
+        destination: { lat: 40.99, lng: 29.03, label: "Kadikoy" },
+        geometry: GEOMETRY,
+        provider: "here",
+      },
     },
     lastLocation: {
       latitude: 41.05,
@@ -209,9 +226,13 @@ test("eta is only computed for in_progress and is cached for 60s", async () => {
     status: "in_progress",
     taskId: "eta-live",
     routeJson: {
-      origin: { lat: 41.02, lng: 28.98, label: "Ambarli" },
-      destination: { lat: 40.99, lng: 29.03, label: "Kadikoy" },
-      geometry: GEOMETRY,
+      distance: "12",
+      public_route: {
+        origin: { lat: 41.02, lng: 28.98, label: "Ambarli" },
+        destination: { lat: 40.99, lng: 29.03, label: "Kadikoy" },
+        geometry: GEOMETRY,
+        provider: "here",
+      },
     },
     lastLocation: {
       latitude: 41.05,
@@ -242,9 +263,13 @@ test("eta short-circuits within 50m and marks a location older than 10 minutes s
     status: "in_progress",
     taskId: "eta-near",
     routeJson: {
-      origin: { lat: 41.02, lng: 28.98, label: "Ambarli" },
-      destination: { lat: 40.99, lng: 29.03, label: "Kadikoy" },
-      geometry: GEOMETRY,
+      distance: "12",
+      public_route: {
+        origin: { lat: 41.02, lng: 28.98, label: "Ambarli" },
+        destination: { lat: 40.99, lng: 29.03, label: "Kadikoy" },
+        geometry: GEOMETRY,
+        provider: "here",
+      },
     },
     lastLocation: {
       latitude: 40.99,
@@ -269,9 +294,13 @@ test("eta short-circuits within 50m and marks a location older than 10 minutes s
     status: "in_progress",
     taskId: "eta-stale",
     routeJson: {
-      origin: { lat: 41.02, lng: 28.98, label: "Ambarli" },
-      destination: { lat: 40.99, lng: 29.03, label: "Kadikoy" },
-      geometry: GEOMETRY,
+      distance: "12",
+      public_route: {
+        origin: { lat: 41.02, lng: 28.98, label: "Ambarli" },
+        destination: { lat: 40.99, lng: 29.03, label: "Kadikoy" },
+        geometry: GEOMETRY,
+        provider: "here",
+      },
     },
     lastLocation: {
       latitude: 41.05,
