@@ -2,7 +2,7 @@
  * HereRoutingProvider.js — ADR-0014 HereRoutingProvider (computeRoute + helper).
  *
  * Built to match the LIVE server.js HERE block byte-for-byte in behaviour:
- *   - transportMode=truck (filo araci), return=summary,incidents
+ *   - transportMode=truck (filo araci), return=summary,polyline,incidents
  *   - section.summary.{duration,baseDuration}
  *   - delayMin = max(0, round((dur-base)/60))
  *   - incidents: first 2, { text: description.value|null, type: normalized }
@@ -14,6 +14,7 @@
  */
 
 require("./contract"); // JSDoc typedefs only (no runtime export)
+const { decodeLatLng } = require("../../utils/herePolyline");
 
 class HereRoutingProvider {
   constructor() {
@@ -58,7 +59,7 @@ class HereRoutingProvider {
       req.destination.lat +
       "," +
       req.destination.lon +
-      "&return=summary,incidents" +
+      "&return=summary,polyline,incidents" +
       "&apiKey=" +
       HERE_KEY;
 
@@ -76,13 +77,27 @@ class HereRoutingProvider {
       type: (i.type || "incident").toLowerCase().replace(/[^a-z_]/g, "_"),
     }));
 
-    return {
+    // Polyline is additive. A bad encoding must not break driver traffic.
+    let geometry;
+    try {
+      if (section?.polyline) {
+        const pairs = decodeLatLng(section.polyline);
+        if (Array.isArray(pairs) && pairs.length >= 2) geometry = pairs;
+      }
+    } catch (_) {
+      geometry = undefined;
+    }
+
+    const result = {
       durationSec,
       baseDurationSec,
       delayMin,
       incidents,
       raw: data,
     };
+    if (geometry) result.geometry = geometry;
+    if (Number.isFinite(summary?.length)) result.distanceM = summary.length;
+    return result;
   }
 
   /**

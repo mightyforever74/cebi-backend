@@ -2,6 +2,7 @@
 
 const crypto = require("crypto");
 const rateLimit = require("@fastify/rate-limit");
+const { createProvider } = require("../services/routing/factory");
 
 const PUBLIC_TRACK_BASE_DEFAULT = "https://track.tulipfleet.com/v";
 const PUBLIC_TRACK_JSON_404 = { error: "Invalid or expired link" };
@@ -152,11 +153,6 @@ function haversineDistanceKm(lat1, lon1, lat2, lon2) {
   return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function numOrNull(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
 function asObject(value) {
   if (!value) return null;
   if (typeof value === "string") {
@@ -196,105 +192,230 @@ function resolveRoutePoint(primary, fallback, defaultLabel) {
   return { lat: pair.lat, lng: pair.lng, label };
 }
 
-function getNextWaypoint(waypoints) {
-  if (!Array.isArray(waypoints)) return null;
-  return (
-    waypoints.find(
-      (wp) => String(wp?.status || "").toLowerCase() !== "completed"
-    ) || null
-  );
+// Single-instance bounded. Core prod is one Node process in one container,
+// so these Maps are the route lock and the 60s ETA cache.
+const ROUTE_INFLIGHT = new Map();
+const ROUTE_FAIL_LOGGED = new Set();
+const ROUTE_FAIL_UNTIL = new Map();
+const ETA_CACHE = new Map();
+const ETA_INFLIGHT = new Map();
+const ETA_FAIL_LOGGED = new Set();
+const ETA_TTL_MS = 60 * 1000;
+const ETA_STALE_MS = 10 * 60 * 1000;
+const ETA_PROXIMITY_M = 50;
+const ROUTE_FAIL_BACKOFF_MS = 60 * 1000;
+
+let fallbackProvider = null;
+
+function trackProvider(fastify) {
+  if (fastify && fastify.routingProvider) return fastify.routingProvider;
+  if (!fallbackProvider) fallbackProvider = createProvider();
+  return fallbackProvider;
 }
 
-async function getRecentAvgSpeedKmh(client, deviceId) {
-  if (!deviceId) return 0;
-  const { rows } = await client.query(
-    `SELECT AVG(COALESCE(speed,0))::float AS avg_speed
-     FROM locations
-     WHERE device_id = $1 AND time > NOW() - INTERVAL '5 minutes'`,
-    [deviceId]
-  );
-  const avg = Number(rows?.[0]?.avg_speed ?? 0);
-  if (!Number.isFinite(avg) || avg < 3) return 0;
-  return avg;
+function cachedGeometry(routeJson) {
+  const geometry = routeJson && routeJson.geometry;
+  if (!Array.isArray(geometry) || geometry.length < 2) return null;
+  return geometry;
 }
 
-async function estimateSpeedFromLastTwoPointsKmh(client, deviceId) {
-  if (!deviceId) return 0;
-  const { rows } = await client.query(
-    `SELECT latitude, longitude, time
-     FROM locations
-     WHERE device_id = $1
-       AND latitude IS NOT NULL AND longitude IS NOT NULL
-     ORDER BY time DESC
-     LIMIT 2`,
-    [deviceId]
-  );
-  if (rows.length < 2) return 0;
-  const p1 = rows[0];
-  const p2 = rows[1];
-  const t1 = Date.parse(p1.time);
-  const t2 = Date.parse(p2.time);
-  if (!Number.isFinite(t1) || !Number.isFinite(t2) || t1 <= t2) return 0;
-  const dtSeconds = (t1 - t2) / 1000;
-  if (dtSeconds < 5 || dtSeconds > 600) return 0;
-  const lat1 = Number(p1.latitude),
-    lon1 = Number(p1.longitude);
-  const lat2 = Number(p2.latitude),
-    lon2 = Number(p2.longitude);
-  if (![lat1, lon1, lat2, lon2].every(Number.isFinite)) return 0;
-  const distKm = haversineDistanceKm(lat1, lon1, lat2, lon2);
-  if (distKm < 0.03) return 0;
-  const speedKmh = (distKm / dtSeconds) * 3600;
-  if (!Number.isFinite(speedKmh) || speedKmh < 3) return 0;
-  if (speedKmh > 160) return 160;
-  return speedKmh;
-}
-
-async function hasRecentStopDelayedEvent(client, taskId, stopId) {
-  const { rows } = await client.query(
-    `SELECT 1
-     FROM task_events
-     WHERE task_id = $1 AND stop_id = $2 AND type = 'STOP_DELAYED'
-       AND created_at > NOW() - INTERVAL '30 minutes'
-     LIMIT 1`,
-    [String(taskId), String(stopId)]
-  );
-  return rows.length > 0;
-}
-
-async function insertTaskEventTx(
-  client,
-  {
-    taskId,
-    type,
-    message = null,
-    stopId = null,
-    legIndex = null,
-    createdByUserId = null,
-    createdByRole = null,
+function logOnce(seen, key, logger, level, message, extra) {
+  const id = String(key);
+  if (seen.has(id)) return;
+  seen.add(id);
+  if (logger && typeof logger[level] === "function") {
+    logger[level](extra || {}, message);
   }
-) {
+}
+
+function herePoint(point) {
+  return { lat: point.lat, lon: point.lng };
+}
+
+async function ensureRoadGeometry(client, taskId, route, routeJson, provider, logger) {
+  const existing = cachedGeometry(routeJson);
+  if (existing) return existing;
+  if (!route.origin || !route.destination) return null;
+
+  const key = String(taskId);
+  const blockedUntil = ROUTE_FAIL_UNTIL.get(key);
+  if (blockedUntil && blockedUntil > Date.now()) return null;
+
+  let job = ROUTE_INFLIGHT.get(key);
+  if (!job) {
+    job = computeAndStoreRoute(client, taskId, route, provider, logger);
+    ROUTE_INFLIGHT.set(key, job);
+  }
   try {
-    if (process.env.FEATURE_TASK_EVENTS === "false") return;
-    if (!taskId || !type) return;
+    return await job;
+  } finally {
+    if (ROUTE_INFLIGHT.get(key) === job) ROUTE_INFLIGHT.delete(key);
+  }
+}
+
+async function computeAndStoreRoute(client, taskId, route, provider, logger) {
+  const key = String(taskId);
+  try {
     const { rows } = await client.query(
-      `INSERT INTO task_events
-       (task_id, stop_id, leg_index, type, message, created_by_user_id, created_by_role)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
-       RETURNING id`,
-      [
-        String(taskId),
-        stopId != null ? String(stopId) : null,
-        Number.isFinite(legIndex) ? legIndex : null,
-        String(type),
-        message != null ? String(message) : null,
-        createdByUserId != null ? String(createdByUserId) : null,
-        createdByRole != null ? String(createdByRole) : null,
-      ]
+      `SELECT route_json FROM tasks WHERE id = $1`,
+      [taskId]
     );
-    return rows?.[0]?.id;
-  } catch (_) {
-    return;
+    const again = cachedGeometry(asObject(rows[0] && rows[0].route_json));
+    if (again) return again;
+  } catch (err) {
+    logOnce(
+      ROUTE_FAIL_LOGGED,
+      "read:" + key,
+      logger,
+      "warn",
+      "public track route cache read failed",
+      { code: "READ" }
+    );
+    return null;
+  }
+
+  let result;
+  try {
+    result = await provider.computeRoute({
+      origin: herePoint(route.origin),
+      destination: herePoint(route.destination),
+      transportMode: "truck",
+    });
+  } catch (err) {
+    ROUTE_FAIL_UNTIL.set(key, Date.now() + ROUTE_FAIL_BACKOFF_MS);
+    logOnce(
+      ROUTE_FAIL_LOGGED,
+      key,
+      logger,
+      "warn",
+      "public track HERE route unavailable",
+      { code: err && err.code ? err.code : "HERE" }
+    );
+    return null;
+  }
+
+  const geometry = Array.isArray(result && result.geometry) ? result.geometry : null;
+  if (!geometry || geometry.length < 2) {
+    ROUTE_FAIL_UNTIL.set(key, Date.now() + ROUTE_FAIL_BACKOFF_MS);
+    logOnce(
+      ROUTE_FAIL_LOGGED,
+      key,
+      logger,
+      "warn",
+      "public track HERE route unavailable",
+      { code: "NO_GEOMETRY" }
+    );
+    return null;
+  }
+
+  const patch = {
+    origin: route.origin,
+    destination: route.destination,
+    geometry,
+    distance_m: Number.isFinite(result.distanceM) ? result.distanceM : null,
+    duration_s: Number.isFinite(result.durationSec) ? result.durationSec : null,
+    provider: "here",
+    computed_at: new Date().toISOString(),
+  };
+
+  try {
+    await client.query(
+      `UPDATE tasks
+          SET route_json = COALESCE(route_json::jsonb, '{}'::jsonb) || $2::jsonb
+        WHERE id = $1
+          AND (route_json IS NULL OR (route_json::jsonb)->'geometry' IS NULL)`,
+      [taskId, JSON.stringify(patch)]
+    );
+  } catch (err) {
+    logOnce(
+      ROUTE_FAIL_LOGGED,
+      "persist:" + key,
+      logger,
+      "warn",
+      "public track route cache write failed",
+      { code: "PERSIST" }
+    );
+  }
+
+  if (logger && typeof logger.info === "function") {
+    logger.info({ taskId: key }, "public track HERE route computed");
+  }
+  return geometry;
+}
+
+function locationIsStale(lastLocation) {
+  const parsed = Date.parse(lastLocation && lastLocation.time);
+  if (!Number.isFinite(parsed)) return false;
+  return Date.now() - parsed > ETA_STALE_MS;
+}
+
+function withStale(eta, lastLocation) {
+  if (!eta) return null;
+  if (!locationIsStale(lastLocation)) return eta;
+  return Object.assign({}, eta, { stale: true });
+}
+
+async function etaForTask(taskId, lastLocation, destination, provider, logger) {
+  const lat = Number(lastLocation.latitude);
+  const lng = Number(lastLocation.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (!destination) return null;
+
+  const distM =
+    haversineDistanceKm(lat, lng, destination.lat, destination.lng) * 1000;
+  if (distM <= ETA_PROXIMITY_M) {
+    return withStale(
+      {
+        minutes: 0,
+        arrival_at: new Date().toISOString(),
+        source: "proximity",
+      },
+      lastLocation
+    );
+  }
+
+  const key = String(taskId);
+  const hit = ETA_CACHE.get(key);
+  if (hit && hit.expires > Date.now()) return withStale(hit.value, lastLocation);
+
+  let job = ETA_INFLIGHT.get(key);
+  if (!job) {
+    job = computeEta(key, lat, lng, destination, provider, logger);
+    ETA_INFLIGHT.set(key, job);
+  }
+  try {
+    return withStale(await job, lastLocation);
+  } finally {
+    if (ETA_INFLIGHT.get(key) === job) ETA_INFLIGHT.delete(key);
+  }
+}
+
+async function computeEta(key, lat, lng, destination, provider, logger) {
+  try {
+    const result = await provider.computeRoute({
+      origin: { lat, lon: lng },
+      destination: herePoint(destination),
+      transportMode: "truck",
+    });
+    const durationSec = Number(result && result.durationSec);
+    if (!Number.isFinite(durationSec)) return null;
+    const eta = {
+      minutes: Math.max(0, Math.round(durationSec / 60)),
+      arrival_at: new Date(Date.now() + durationSec * 1000).toISOString(),
+      source: "here",
+    };
+    ETA_CACHE.set(key, { expires: Date.now() + ETA_TTL_MS, value: eta });
+    return eta;
+  } catch (err) {
+    logOnce(
+      ETA_FAIL_LOGGED,
+      key,
+      logger,
+      "warn",
+      "public track HERE eta unavailable",
+      { code: err && err.code ? err.code : "HERE" }
+    );
+    return null;
   }
 }
 
@@ -381,101 +502,29 @@ async function publicTrackJson(fastify, request, reply) {
       }
     }
 
+    const provider = trackProvider(fastify);
+    let geometry = cachedGeometry(routeJson);
+    if (!geometry && route.origin && route.destination) {
+      geometry = await ensureRoadGeometry(
+        client,
+        taskId,
+        route,
+        routeJson,
+        provider,
+        request.log
+      );
+    }
+    route.geometry = geometry;
+
     let eta = null;
-
-    const nextWp = live ? getNextWaypoint(waypoints) : null;
-
-    if (nextWp && lastLocation?.latitude && lastLocation?.longitude) {
-      const wpLat = numOrNull(nextWp.latitude ?? nextWp.lat);
-      const wpLng = numOrNull(nextWp.longitude ?? nextWp.lng);
-
-      if (wpLat != null && wpLng != null) {
-        const vLat = Number(lastLocation.latitude);
-        const vLng = Number(lastLocation.longitude);
-
-        const distanceKm = haversineDistanceKm(vLat, vLng, wpLat, wpLng);
-
-        const deviceId = vRows?.[0]?.esp32_device_id || null;
-        let speedKmh = await getRecentAvgSpeedKmh(client, deviceId);
-
-        if (!speedKmh) {
-          const s = Number(lastLocation.speed ?? 0);
-          speedKmh = Number.isFinite(s) ? s : 0;
-        }
-        if (!speedKmh) {
-          speedKmh = await estimateSpeedFromLastTwoPointsKmh(client, deviceId);
-        }
-
-        if (speedKmh >= 3) {
-          const minutes = Math.max(1, Math.round((distanceKm / speedKmh) * 60));
-          const arrivalTimeIso = new Date(
-            Date.now() + minutes * 60 * 1000
-          ).toISOString();
-
-          const plannedIso =
-            nextWp.planned_arrival ||
-            nextWp.eta ||
-            nextWp.scheduled_time ||
-            null;
-
-          let delayed = false;
-          const toleranceMin = 10;
-
-          if (plannedIso) {
-            const plannedMs = Date.parse(plannedIso);
-            if (!Number.isNaN(plannedMs)) {
-              delayed =
-                Date.now() + minutes * 60 * 1000 >
-                plannedMs + toleranceMin * 60 * 1000;
-            }
-          }
-
-          eta = {
-            next_stop_id: nextWp.id,
-            next_stop_label: nextWp.label || nextWp.name || null,
-            distance_km: Number(distanceKm.toFixed(2)),
-            speed_kmh: Number(speedKmh.toFixed(1)),
-            minutes,
-            arrival_time: arrivalTimeIso,
-            planned_time: plannedIso,
-            delayed,
-          };
-
-          if (delayed && plannedIso) {
-            const already = await hasRecentStopDelayedEvent(
-              client,
-              taskId,
-              nextWp.id
-            );
-            if (!already) {
-              await insertTaskEventTx(client, {
-                taskId: taskId,
-                stopId: nextWp.id,
-                type: "STOP_DELAYED",
-                message: `Delay risk. ETA=${minutes}min`,
-                createdByUserId: null,
-                createdByRole: "system",
-              });
-            }
-          }
-        } else {
-          eta = {
-            next_stop_id: nextWp.id,
-            next_stop_label: nextWp.label || nextWp.name || null,
-            distance_km: Number(distanceKm.toFixed(2)),
-            speed_kmh: 0,
-            minutes: null,
-            arrival_time: null,
-            planned_time:
-              nextWp.planned_arrival ||
-              nextWp.eta ||
-              nextWp.scheduled_time ||
-              null,
-            delayed: false,
-            reason: "no_speed",
-          };
-        }
-      }
+    if (live && lastLocation && route.destination) {
+      eta = await etaForTask(
+        taskId,
+        lastLocation,
+        route.destination,
+        provider,
+        request.log
+      );
     }
 
     return reply.send(
@@ -552,6 +601,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "Hareket bekleniyor",
     delayRisk: "GECİKME RİSKİ",
     noEta: "ETA hesaplanamıyor",
+    etaStale: "eski konum",
     liveNote: "Araç yola çıktığında canlı konum burada görünecek",
   },
   en: {
@@ -596,6 +646,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "Waiting for movement",
     delayRisk: "DELAY RISK",
     noEta: "ETA unavailable",
+    etaStale: "stale location",
     liveNote: "Live location appears here once the vehicle is on the way",
   },
   ku: {
@@ -640,6 +691,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "Li benda tevgerê",
     delayRisk: "RÎSKA DERENGÎ",
     noEta: "ETA ne peyda ye",
+    etaStale: "cihê kevn",
     liveNote: "Dem araç derket kir, cihê zindî li vir xuya dibe",
   },
   nl: {
@@ -684,6 +736,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "Wachten op beweging",
     delayRisk: "VERTRAGINGSRISICO",
     noEta: "ETA niet beschikbaar",
+    etaStale: "verouderde locatie",
     liveNote: "De live locatie verschijnt hier zodra het voertuig onderweg is",
   },
   bg: {
@@ -728,6 +781,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "Изчакване на движение",
     delayRisk: "РИСК ОТ ЗАКЪСНЕНИЕ",
     noEta: "ETA не е наличен",
+    etaStale: "остаряло местоположение",
     liveNote: "Местоположението на живо се показва тук, когато автомобилът потегли",
   },
   it: {
@@ -772,6 +826,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "In attesa di movimento",
     delayRisk: "RISCHIO RITARDO",
     noEta: "ETA non disponibile",
+    etaStale: "posizione non aggiornata",
     liveNote: "La posizione live compare qui quando il veicolo è in viaggio",
   },
   es: {
@@ -816,6 +871,7 @@ const PUBLIC_TRACK_I18N = {
     noSpeed: "Esperando movimiento",
     delayRisk: "RIESGO DE RETRASO",
     noEta: "ETA no disponible",
+    etaStale: "ubicación antigua",
     liveNote: "La ubicación en vivo aparece aquí cuando el vehículo está en camino",
   },
 };
@@ -1028,18 +1084,14 @@ async function publicTrackHtml(fastify, request, reply) {
 
     function renderETA(eta) {
       var el = document.getElementById('etaInfo');
-      if (!eta || !eta.next_stop_label) { el.innerHTML = tr('noEta'); return; }
-      var html = '<div class="info-row"><span class="info-label">' + (tr('nextStop')) + '</span><span class="info-value">' + eta.next_stop_label + '</span></div>';
-      html += '<div class="info-row"><span class="info-label">' + (tr('distance')) + '</span><span class="info-value">' + eta.distance_km + ' km</span></div>';
-      if (eta.minutes) {
-        html += '<div class="info-row"><span class="info-label">ETA</span><span class="info-value">' + eta.minutes + ' ' + (tr('min')) + '</span></div>';
-      } else {
-        html += '<div class="info-row"><span class="info-label">ETA</span><span class="info-value">' + (eta.reason === 'no_speed' ? (tr('noSpeed')) : '-') + '</span></div>';
-      }
-      if (eta.delayed) {
-        html += '<div style="background:#FDE8E8;color:#E53E3E;padding:8px 12px;border-radius:8px;margin-top:8px;font-weight:600;text-align:center;"><ion-icon name="warning" style="vertical-align:middle;margin-right:4px;"></ion-icon> ' + (tr('delayRisk')) + '</div>';
-      }
-      el.innerHTML = html;
+      if (!eta || eta.minutes == null || !eta.arrival_at) { el.textContent = tr('noEta'); return; }
+      var when = new Date(eta.arrival_at);
+      if (isNaN(when.getTime())) { el.textContent = tr('noEta'); return; }
+      var hh = String(when.getHours()).padStart(2, '0');
+      var mm = String(when.getMinutes()).padStart(2, '0');
+      var text = 'ETA ' + hh + ':' + mm + ' (~' + eta.minutes + ' min)';
+      if (eta.stale) text += ' · ' + tr('etaStale');
+      el.textContent = text;
     }
 
     function usablePoint(p) {
@@ -1084,7 +1136,20 @@ async function publicTrackHtml(fastify, request, reply) {
         wpMarkers.push(L.marker(dest, { icon: stopIcon('destination') }).addTo(map).bindPopup(route.destination.label || ''));
         bounds.push(dest);
       }
-      if (origin && dest) {
+      var line = null;
+      if (route && route.geometry && route.geometry.length >= 2) {
+        line = [];
+        route.geometry.forEach(function(p) {
+          if (!p || p.length < 2) return;
+          var pt = usablePoint({ lat: p[0], lng: p[1] });
+          if (pt) line.push(pt);
+        });
+        if (line.length < 2) line = null;
+      }
+      if (line) {
+        wpMarkers.push(L.polyline(line, { color: '#5E72E4', weight: 4, opacity: 0.9 }).addTo(map));
+        line.forEach(function(pt) { bounds.push(pt); });
+      } else if (origin && dest) {
         wpMarkers.push(L.polyline([origin, dest], { color: '#5E72E4', weight: 4, opacity: 0.9 }).addTo(map));
       }
       if (wps && wps.length) {

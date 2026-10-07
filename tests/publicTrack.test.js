@@ -137,6 +137,10 @@ function queryFor(mode) {
     if (s.includes("AVG(COALESCE(speed,0))")) return { rows: [{ avg_speed: 0 }] };
     if (s.includes("LIMIT 2")) return { rows: [] };
     if (s.includes("STOP_DELAYED")) return { rows: [] };
+    if (s.includes("SELECT route_json FROM tasks")) {
+      return { rows: [{ route_json: null }] };
+    }
+    if (s.startsWith("UPDATE")) return { rows: [], rowCount: 0 };
     throw new Error("unexpected sql: " + s);
   };
 }

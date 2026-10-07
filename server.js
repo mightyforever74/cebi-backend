@@ -5721,6 +5721,7 @@ fastify.post(
 // ============================================
 // PUBLIC TRACKING — public read (alias /v and /public/track)
 // ============================================
+fastify.decorate("routingProvider", routingProvider);
 fastify.register(require("./routes/publicTrack"));
 
 // ============================================

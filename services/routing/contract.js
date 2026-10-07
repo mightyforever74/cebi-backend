@@ -36,6 +36,8 @@
  * @property {number} delayMin - max(0, round((dur-base)/60))
  * @property {IncidentItem[]} incidents - Ilk 2 olay
  * @property {Object} [raw] - Ureticiden gelen ham govde (audit)
+ * @property {number[][]} [geometry] - Optional [lat, lng] pairs from the HERE flexible polyline
+ * @property {number} [distanceM] - Optional section.summary.length in meters
  */
 
 /**
