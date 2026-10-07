@@ -157,6 +157,45 @@ function numOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function asObject(value) {
+  if (!value) return null;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return typeof value === "object" ? value : null;
+}
+
+// Same coordinate read as simulate_fleet.js numPair. (0,0) is not a stop:
+// it is the null-island point that drew the circles at sea.
+function numPair(o) {
+  if (!o || typeof o !== "object") return null;
+  const lat = Number(o.lat ?? o.latitude);
+  const lng = Number(o.lng ?? o.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat === 0 && lng === 0) return null;
+  return { lat, lng };
+}
+
+function resolveRoutePoint(primary, fallback, defaultLabel) {
+  const primaryObj = asObject(primary);
+  const fallbackObj = asObject(fallback);
+  const fromPrimary = numPair(primaryObj);
+  const source = fromPrimary ? primaryObj : fallbackObj;
+  const pair = fromPrimary || numPair(fallbackObj);
+  if (!pair) return null;
+  const rawLabel = source && (source.label || source.address || source.name);
+  const label =
+    rawLabel != null && String(rawLabel).trim()
+      ? String(rawLabel)
+      : defaultLabel || null;
+  return { lat: pair.lat, lng: pair.lng, label };
+}
+
 function getNextWaypoint(waypoints) {
   if (!Array.isArray(waypoints)) return null;
   return (
@@ -273,10 +312,12 @@ async function publicTrackJson(fastify, request, reply) {
     // Task bilgisi
     const { rows: taskRows } = await client.query(
       `SELECT t.task_no, t.status, t.title, t.start_location, t.end_location,
-              t.waypoints, t.actual_start, t.actual_end,
+              t.waypoints, t.actual_start, t.actual_end, t.route_json,
+              d.pickup_location, d.dropoff_location,
               v.plate_no as vehicle_plate
        FROM tasks t
        LEFT JOIN vehicles v ON t.vehicle_id = v.id
+       LEFT JOIN enterprise.dispatch_tasks d ON d.id = t.enterprise_dispatch_task_id
        WHERE t.id = $1`,
       [taskId]
     );
@@ -315,6 +356,20 @@ async function publicTrackJson(fastify, request, reply) {
         if (locRows.length) lastLocation = locRows[0];
       }
     }
+
+    const routeJson = asObject(task.route_json) || {};
+    const route = {
+      origin: resolveRoutePoint(
+        routeJson.origin,
+        task.pickup_location,
+        task.start_location || null
+      ),
+      destination: resolveRoutePoint(
+        routeJson.destination,
+        task.dropoff_location,
+        task.end_location || null
+      ),
+    };
 
     // Waypoints parse
     let waypoints = task.waypoints || [];
@@ -437,6 +492,7 @@ async function publicTrackJson(fastify, request, reply) {
         },
         waypoints,
         events,
+        route,
         last_location: live ? lastLocation : null,
         eta: live ? eta : null,
         updated_at: new Date().toISOString(),
@@ -926,10 +982,10 @@ async function publicTrackHtml(fastify, request, reply) {
         if (!r.ok) { document.getElementById('updateBar').textContent = tr('invalidLinkShort'); return; }
         const d = await r.json();
         renderTask(d.task);
-        renderWaypoints(d.waypoints);
+        renderWaypoints(d.waypoints, d.route);
         renderEvents(d.events);
         renderETA(d.eta);
-        renderLocation(d.last_location, d.waypoints, d.task && d.task.status);
+        renderLocation(d.last_location, d.waypoints, d.task && d.task.status, d.route);
         document.getElementById('updateBar').textContent = tr('lastUpdate') + ': ' + new Date().toLocaleString(LOCALE);
       } catch(e) {
         document.getElementById('updateBar').textContent = tr('connError');
@@ -949,11 +1005,17 @@ async function publicTrackHtml(fastify, request, reply) {
         '<div class="info-row"><span class="info-label">' + tr('status') + '</span><span class="info-value"><span class="status-badge status-' + s + '">' + statusLabel(s) + '</span></span></div>';
     }
 
-    function renderWaypoints(wps) {
-      if (!wps || !wps.length) { document.getElementById('waypointsList').textContent = tr('noStops'); return; }
-      document.getElementById('waypointsList').innerHTML = wps.map(function(wp) {
+    function renderWaypoints(wps, route) {
+      var rows = [];
+      if (route && route.origin) rows.push({ name: route.origin.label, status: 'pending' });
+      if (route && route.destination) rows.push({ name: route.destination.label, status: 'pending' });
+      (wps || []).forEach(function(wp) {
+        rows.push({ name: wp.name || wp.label, status: wp.status || 'pending' });
+      });
+      if (!rows.length) { document.getElementById('waypointsList').textContent = tr('noStops'); return; }
+      document.getElementById('waypointsList').innerHTML = rows.map(function(wp) {
         var s = wp.status || 'pending';
-        return '<div class="wp-item"><div class="wp-dot ' + s + '"></div><span class="wp-name">' + (wp.name||wp.id||'-') + '</span><span class="wp-status">' + (tr(s)||s) + '</span></div>';
+        return '<div class="wp-item"><div class="wp-dot ' + s + '"></div><span class="wp-name">' + (wp.name||'-') + '</span><span class="wp-status">' + (tr(s)||s) + '</span></div>';
       }).join('');
     }
 
@@ -980,7 +1042,27 @@ async function publicTrackHtml(fastify, request, reply) {
       el.innerHTML = html;
     }
 
-    function renderLocation(loc, wps, taskStatus) {
+    function usablePoint(p) {
+      if (!p) return null;
+      var lat = Number(p.lat != null ? p.lat : p.latitude);
+      var lng = Number(p.lng != null ? p.lng : p.longitude);
+      if (!isFinite(lat) || !isFinite(lng)) return null;
+      if (lat === 0 && lng === 0) return null;
+      return [lat, lng];
+    }
+
+    function stopIcon(kind) {
+      var color = kind === 'origin' ? '#11CDEF' : '#2DCE89';
+      var cls = kind === 'origin' ? 'stop-marker stop-origin' : 'stop-marker stop-destination';
+      return L.divIcon({
+        className: cls,
+        html: '<div style="width:16px;height:16px;border-radius:50%;background:' + color + ';border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.25);"></div>',
+        iconSize: [16, 16],
+        iconAnchor: [8, 8]
+      });
+    }
+
+    function renderLocation(loc, wps, taskStatus, route) {
       var note = document.getElementById('liveNote');
       if (!LIVE_STATUS[taskStatus]) {
         note.hidden = false;
@@ -991,36 +1073,56 @@ async function publicTrackHtml(fastify, request, reply) {
       }
       wpMarkers.forEach(function(m) { map.removeLayer(m); });
       wpMarkers = [];
+      var bounds = [];
+      var origin = route ? usablePoint(route.origin) : null;
+      var dest = route ? usablePoint(route.destination) : null;
+      if (origin) {
+        wpMarkers.push(L.marker(origin, { icon: stopIcon('origin') }).addTo(map).bindPopup(route.origin.label || ''));
+        bounds.push(origin);
+      }
+      if (dest) {
+        wpMarkers.push(L.marker(dest, { icon: stopIcon('destination') }).addTo(map).bindPopup(route.destination.label || ''));
+        bounds.push(dest);
+      }
+      if (origin && dest) {
+        wpMarkers.push(L.polyline([origin, dest], { color: '#5E72E4', weight: 4, opacity: 0.9 }).addTo(map));
+      }
       if (wps && wps.length) {
         wps.forEach(function(wp) {
-          if (wp.latitude && wp.longitude) {
-            var s = wp.status || 'pending';
-            var m = L.circleMarker([wp.latitude, wp.longitude], {
-              radius: 8, fillColor: statusColor(s), color:'#fff', weight:2, fillOpacity:0.9
-            }).addTo(map).bindPopup('<b>' + (wp.name||'-') + '</b><br>' + (tr(s)||s));
-            wpMarkers.push(m);
-          }
+          var pt = usablePoint(wp);
+          if (!pt) return;
+          var s = wp.status || 'pending';
+          var m = L.circleMarker(pt, {
+            radius: 8, fillColor: statusColor(s), color:'#fff', weight:2, fillOpacity:0.9
+          }).addTo(map).bindPopup('<b>' + (wp.name||'-') + '</b><br>' + (tr(s)||s));
+          wpMarkers.push(m);
+          bounds.push(pt);
         });
       }
 
-      if (loc && loc.latitude && loc.longitude) {
+      var vehiclePt = null;
+      if (LIVE_STATUS[taskStatus]) vehiclePt = usablePoint(loc);
+      if (vehiclePt) {
         if (vehicleMarker) {
-          vehicleMarker.setLatLng([loc.latitude, loc.longitude]);
+          vehicleMarker.setLatLng(vehiclePt);
         } else {
-          vehicleMarker = L.marker([loc.latitude, loc.longitude], {
+          vehicleMarker = L.marker(vehiclePt, {
             icon: L.divIcon({
               html:'<ion-icon name="bus" style="font-size:28px;color:#5E72E4;"></ion-icon>',
-              iconSize:[32,32], iconAnchor:[16,16], className:''
+              iconSize:[32,32], iconAnchor:[16,16], className:'vehicle-marker'
             })
           }).addTo(map).bindPopup(tr('vehicleLocation'));
         }
-        if (firstLoad) {
-          map.setView([loc.latitude, loc.longitude], 10);
-          firstLoad = false;
-        }
-      } else if (firstLoad && wps && wps.length) {
-        var bounds = wps.filter(function(w){return w.latitude&&w.longitude;}).map(function(w){return [w.latitude,w.longitude];});
-        if (bounds.length) { map.fitBounds(bounds, {padding:[40,40]}); firstLoad = false; }
+        bounds.push(vehiclePt);
+      } else if (vehicleMarker) {
+        map.removeLayer(vehicleMarker);
+        vehicleMarker = null;
+      }
+
+      if (firstLoad && bounds.length) {
+        if (bounds.length === 1) map.setView(bounds[0], 13);
+        else map.fitBounds(bounds, { padding: [40, 40] });
+        firstLoad = false;
       }
     }
 
