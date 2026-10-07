@@ -17,7 +17,7 @@ function hoursFromNow(hours) {
 
 function statusFor(mode) {
   if (mode === "completed") return "completed";
-  if (mode === "assigned") return "assigned";
+  if (mode === "assigned" || mode === "dispatch") return "assigned";
   return "in_progress";
 }
 
@@ -87,6 +87,20 @@ function queryFor(mode) {
             actual_start: null,
             actual_end: null,
             vehicle_plate: "34-TEST",
+            route_json: null,
+            pickup_location:
+              mode === "dispatch"
+                ? { lat: 41.02, lng: 28.98, address: "Ambarli", id: "loc-1" }
+                : null,
+            dropoff_location:
+              mode === "dispatch"
+                ? {
+                    lat: 40.99,
+                    lng: 29.03,
+                    address: "Kadikoy",
+                    location_id: "loc-2",
+                  }
+                : null,
           },
         ],
       };
@@ -176,6 +190,7 @@ test("valid token returns 200 on /v and the legacy path", async () => {
       "eta",
       "events",
       "last_location",
+      "route",
       "task",
       "updated_at",
       "waypoints",
@@ -247,6 +262,40 @@ test("completed task returns the same 404", async () => {
     });
     assert.equal(res.statusCode, 404);
     assert.deepEqual(res.json(), { error: "Invalid or expired link" });
+  } finally {
+    await app.close();
+  }
+});
+
+test("dispatcher task without route_json uses enterprise pickup and dropoff", async () => {
+  const app = await buildApp("dispatch");
+  try {
+    const res = await app.inject({
+      method: "GET",
+      url: "/v/" + TOKEN + ".json",
+    });
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.deepEqual(body.route.origin, {
+      lat: 41.02,
+      lng: 28.98,
+      label: "Ambarli",
+    });
+    assert.deepEqual(body.route.destination, {
+      lat: 40.99,
+      lng: 29.03,
+      label: "Kadikoy",
+    });
+    assert.equal(body.last_location, null);
+    assert.deepEqual(idKeys(body, []), []);
+    assertNoIndex(res);
+
+    const page = await app.inject({ method: "GET", url: "/v/" + TOKEN });
+    assert.equal(page.statusCode, 200);
+    assert.match(page.body, /stop-marker stop-origin/);
+    assert.match(page.body, /stop-marker stop-destination/);
+    assert.match(page.body, /L\.polyline\(\[origin, dest\]/);
+    assert.match(page.body, /lat === 0 && lng === 0/);
   } finally {
     await app.close();
   }
