@@ -28,7 +28,8 @@
  * v3.1 (GOZLEM-8, 04.08, Cem onayli D1/D2/D3): iki bacakli surus —
  * konum -> pickup (DWELL yukleme molasi, --dwell sn, vars. 60) -> dropoff.
  * Taze konum pickup'a <= 200m ise bacak-1 atlanir (yerinde sayma onlemi).
- * Bacaklar duz cizgi (haversine) — HERE geometrisi bilinçli kapsam disi.
+ * Bacak-1 (son konum -> pickup) duz cizgi kalir. Bacak-2, route_json.public_route
+ * .geometry varsa o noktalar boyunca gider; yoksa dropoff'a duz cizgi.
  */
 
 const path = require("path");
@@ -93,10 +94,77 @@ function numPair(o) {
   return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
 }
 
+// publicTrack.js caches HERE geometry at route_json.public_route.geometry:
+// decodeLatLng pairs, and the page reads each point as [lat, lng] (p[0], p[1]).
+// Same acceptance as cachedGeometry: an array of at least two points.
+function publicRouteGeometry(routeJson) {
+  const nested = routeJson && routeJson.public_route;
+  if (!nested || typeof nested !== "object" || Array.isArray(nested)) return null;
+  const geometry = nested.geometry;
+  if (!Array.isArray(geometry) || geometry.length < 2) return null;
+  const points = [];
+  for (const p of geometry) {
+    if (!Array.isArray(p) || p.length < 2) continue;
+    const lat = Number(p[0]);
+    const lng = Number(p[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    points.push({ lat, lng });
+  }
+  return points.length >= 2 ? points : null;
+}
+
+function remainM(pos, dest, path) {
+  if (!dest) return 0;
+  let d = havM(pos, dest);
+  let prev = dest;
+  if (path) {
+    for (const p of path) {
+      d += havM(prev, p);
+      prev = p;
+    }
+  }
+  return d;
+}
+
+function armDelivery(st, geometry) {
+  st.dest = { lat: geometry[0].lat, lng: geometry[0].lng };
+  st.path = geometry.slice(1).map((p) => ({ lat: p.lat, lng: p.lng }));
+  st.legs = [];
+  st.road = null;
+  st.onRoad = true;
+  st.carryM = 0;
+}
+
+function finishLeg(st) {
+  if (st.legs && st.legs.length > 0) {
+    const next = st.legs.shift();
+    const road = st.road;
+    st.dwellUntilMs = Date.now() + DWELL_S * 1000;
+    st.vKmh = 0;
+    st.carryM = 0;
+    if (road && road.length >= 2) armDelivery(st, road);
+    else {
+      st.dest = { ...next };
+      st.path = [];
+      st.onRoad = false;
+      st.road = null;
+    }
+    const km = (remainM(st.pos, st.dest, st.path) / 1000).toFixed(1);
+    console.log(`[v3.1] PICKUP VARIS ${st.plate} gorev=${st.taskNo} yukleme=${DWELL_S}s sonra teslimata ${km}km`);
+    return;
+  }
+  st.arrived = true;
+  st.onRoad = false;
+  st.path = [];
+  st.carryM = 0;
+  console.log(`[v3] VARIS ${st.plate} gorev=${st.taskNo} son-adim=${st.vKmh.toFixed(1)}km/h`);
+}
+
 const client = new Client({ connectionString: process.env.DATABASE_URL });
 // device_id -> durum
 // { mode, plate, style, offsetS, nextDueMs, pos, vKmh, dest, taskNo, arrived, lastKnown, seeded,
-//   legs (v3.1 kalan bacak hedefleri), dwellUntilMs (v3.1 yukleme molasi bitisi) }
+//   legs (v3.1 kalan bacak hedefleri), dwellUntilMs (v3.1 yukleme molasi bitisi),
+//   path (bacak-2'de dest'ten sonraki geometri noktalari), onRoad, carryM, road }
 const fleet = new Map();
 
 async function discover() {
@@ -123,7 +191,8 @@ async function discover() {
   for (const m of moving) {
     const o = numPair(m.route_json && m.route_json.origin) || numPair(m.pickup_location);
     const dst = numPair(m.route_json && m.route_json.destination) || numPair(m.dropoff_location);
-    if (o && dst) movingByDevice.set(m.device_id, { taskNo: m.task_no, origin: o, dest: dst });
+    const geometry = publicRouteGeometry(m.route_json);
+    if (o && dst) movingByDevice.set(m.device_id, { taskNo: m.task_no, origin: o, dest: dst, geometry });
     // koordinat cozulmezse: hareket YOK, arac keepalive'da kalir (durust)
   }
 
@@ -140,7 +209,7 @@ async function discover() {
         nextDueMs: now + (h % TICK_S) * 1000,
         mode: "keepalive", pos: null, vKmh: 0, dest: null, taskNo: null,
         arrived: false, lastKnown: null, seeded: false, company: v.company,
-        legs: [], dwellUntilMs: 0,
+        legs: [], dwellUntilMs: 0, path: [], onRoad: false, carryM: 0, road: null,
       };
       fleet.set(id, st);
       console.log(`[v3] filo+ ${v.plate_no} (${id}) stil=${st.style.name} ofset=${st.offsetS}s`);
@@ -155,24 +224,43 @@ async function discover() {
       st.taskNo = mv.taskNo;
       st.pos = fresh ? { lat: st.lastKnown.lat, lng: st.lastKnown.lng } : { ...mv.origin };
       // v3.1: bacak kuyrugu — taze konum pickup'a > PICKUP_SKIP_M ise
-      // [pickup, dropoff]; degilse (ya da pickup'tan doguyorsa) [dropoff]
-      // (eski davranisla birebir — regresyon yok).
-      st.legs = fresh && havM(st.pos, mv.origin) > PICKUP_SKIP_M
-        ? [{ ...mv.origin }, { ...mv.dest }]
-        : [{ ...mv.dest }];
-      st.dest = st.legs.shift();
+      // once pickup; degilse (ya da pickup'tan doguyorsa) dogrudan teslimat.
+      // Teslimat bacagi public_route.geometry varsa o noktalari izler.
+      const toPickup = fresh && havM(st.pos, mv.origin) > PICKUP_SKIP_M;
       st.dwellUntilMs = 0;
       st.vKmh = 0;
       st.arrived = false;
-      console.log(`[v3.1] HAREKET ${st.plate} gorev=${mv.taskNo} baslangic=${fresh ? "son-konum" : "pickup"} bacak=1/${st.legs.length + 1} hedefe=${(havM(st.pos, st.dest) / 1000).toFixed(1)}km`);
+      st.carryM = 0;
+      if (toPickup) {
+        st.dest = { ...mv.origin };
+        st.legs = [{ ...mv.dest }];
+        st.path = [];
+        st.onRoad = false;
+        st.road = mv.geometry;
+      } else if (mv.geometry) {
+        armDelivery(st, mv.geometry);
+      } else {
+        st.dest = { ...mv.dest };
+        st.legs = [];
+        st.path = [];
+        st.onRoad = false;
+        st.road = null;
+      }
+      const geomTxt = mv.geometry ? `geometri=${mv.geometry.length} nokta` : "geometri=yok";
+      console.log(`[v3.1] HAREKET ${st.plate} gorev=${mv.taskNo} baslangic=${fresh ? "son-konum" : "pickup"} bacak=1/${st.legs.length + 1} hedefe=${(remainM(st.pos, st.dest, st.path) / 1000).toFixed(1)}km ${geomTxt}`);
     } else if (!mv && st.mode === "hareket") {
       st.mode = "keepalive";
       console.log(`[v3] KEEPALIVE ${st.plate} (gorev bitti/cekildi)`);
       st.taskNo = null; st.dest = null; st.arrived = false; st.legs = []; st.dwellUntilMs = 0;
+      st.path = []; st.onRoad = false; st.carryM = 0; st.road = null;
     } else if (mv && st.mode === "hareket" && mv.taskNo !== st.taskNo) {
       // v3.1 basitlestirme (bilincli): surus ortasinda gorev degisirse
-      // dogrudan dropoff'a gidilir (bacak-1 tekrar kurulmaz).
-      st.taskNo = mv.taskNo; st.dest = { ...mv.dest }; st.legs = []; st.dwellUntilMs = 0; st.arrived = false;
+      // dogrudan teslimat bacagina gidilir (bacak-1 tekrar kurulmaz).
+      st.taskNo = mv.taskNo; st.dwellUntilMs = 0; st.arrived = false; st.carryM = 0;
+      if (mv.geometry) armDelivery(st, mv.geometry);
+      else {
+        st.dest = { ...mv.dest }; st.legs = []; st.path = []; st.onRoad = false; st.road = null;
+      }
       console.log(`[v3] ROTA GUNCELLENDI ${st.plate} gorev=${mv.taskNo}`);
     }
   }
@@ -201,7 +289,7 @@ async function tickDevice(id, st) {
       st.dwellUntilMs = 0;
       console.log(`[v3.1] TESLIMATA CIKIS ${st.plate} gorev=${st.taskNo}`);
     }
-    const remain = havM(st.pos, st.dest);
+    const remain = remainM(st.pos, st.dest, st.path);
     const s = st.style;
     if (st.vKmh < s.min) st.vKmh = Math.min(s.min, st.vKmh + 12);
     else {
@@ -209,20 +297,39 @@ async function tickDevice(id, st) {
     }
     if (remain < 1500) st.vKmh = Math.max(20, st.vKmh * 0.6);
     let stepM = (st.vKmh / 3.6) * TICK_S;
+    if (st.onRoad) {
+      // Konum her zaman bir geometri noktasi. Artan metre sonraki tike
+      // tasinir; ortalama hiz duz bacaktaki adimla ayni kalir.
+      if (stepM >= remain) {
+        st.vKmh = (remain / TICK_S) * 3.6;
+        if (st.path && st.path.length) st.dest = { ...st.path[st.path.length - 1] };
+        st.pos = { ...st.dest };
+        st.path = [];
+        st.carryM = 0;
+        await writeLoc(id, st.pos, st.vKmh);
+        finishLeg(st);
+        return;
+      }
+      st.carryM = (st.carryM || 0) + stepM;
+      while (st.dest && st.carryM >= havM(st.pos, st.dest)) {
+        const dist = havM(st.pos, st.dest);
+        st.carryM -= dist;
+        st.pos = { lat: st.dest.lat, lng: st.dest.lng };
+        if (st.path && st.path.length) st.dest = st.path.shift();
+        else {
+          st.carryM = 0;
+          await writeLoc(id, st.pos, st.vKmh);
+          finishLeg(st);
+          return;
+        }
+      }
+      return writeLoc(id, st.pos, st.vKmh);
+    }
     if (stepM >= remain) {
       st.vKmh = (remain / TICK_S) * 3.6;
       st.pos = { ...st.dest };
       await writeLoc(id, st.pos, st.vKmh);
-      if (st.legs && st.legs.length > 0) {
-        // v3.1: PICKUP varisi — yukleme molasi, sonra bacak-2 (dropoff)
-        st.dest = st.legs.shift();
-        st.dwellUntilMs = Date.now() + DWELL_S * 1000;
-        st.vKmh = 0;
-        console.log(`[v3.1] PICKUP VARIS ${st.plate} gorev=${st.taskNo} yukleme=${DWELL_S}s sonra teslimata ${(havM(st.pos, st.dest) / 1000).toFixed(1)}km`);
-      } else {
-        st.arrived = true;
-        console.log(`[v3] VARIS ${st.plate} gorev=${st.taskNo} son-adim=${st.vKmh.toFixed(1)}km/h`);
-      }
+      finishLeg(st);
       return;
     }
     st.pos = step(st.pos, brg(st.pos, st.dest), stepM);
