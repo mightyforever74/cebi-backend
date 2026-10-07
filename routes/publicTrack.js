@@ -50,7 +50,7 @@ function publicHtmlShell(lang, title, inner) {
     "<!DOCTYPE html><html lang=\"" +
     escapeHtml(lang) +
     "\"><head><meta charset=\"utf-8\">" +
-    "<meta name=\"referrer\" content=\"no-referrer\">" +
+    "<meta name=\"referrer\" content=\"strict-origin-when-cross-origin\">" +
     "<title>" +
     escapeHtml(title) +
     "</title></head><body style=\"font-family:Arial,sans-serif;text-align:center;padding:60px;\">" +
@@ -812,7 +812,7 @@ async function publicTrackHtml(fastify, request, reply) {
 <html lang="${escapeHtml(lang)}">
 <head>
   <meta charset="utf-8">
-  <meta name="referrer" content="no-referrer">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(pageTitle)}</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -906,7 +906,7 @@ async function publicTrackHtml(fastify, request, reply) {
     const map = L.map('map').setView([39.9, 32.8], 6);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution:'&copy; OpenStreetMap',
-      referrerPolicy: 'no-referrer'
+      referrerPolicy: 'strict-origin'
     }).addTo(map);
 
     let vehicleMarker = null;
@@ -1053,11 +1053,18 @@ const publicReadLimit = {
   },
 };
 
+function publicReferrerPolicy(url) {
+  const path = String(url || "").split("?")[0];
+  return path.endsWith(".json")
+    ? "no-referrer"
+    : "strict-origin-when-cross-origin";
+}
+
 async function publicTrackRoutes(fastify) {
-  fastify.addHook("onRequest", async (_request, reply) => {
+  fastify.addHook("onRequest", async (request, reply) => {
     reply.header("X-Robots-Tag", "noindex, nofollow");
-    reply.header("Referrer-Policy", "no-referrer");
     reply.header("Cache-Control", "no-store");
+    reply.header("Referrer-Policy", publicReferrerPolicy(request.url));
   });
   await fastify.register(rateLimit, {
     global: false,
