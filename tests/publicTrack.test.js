@@ -34,10 +34,10 @@ function idKeys(value, found) {
   return found;
 }
 
-function assertNoIndex(res) {
+function assertNoIndex(res, referrerPolicy) {
   assert.equal(res.headers["x-robots-tag"], "noindex, nofollow");
-  assert.equal(res.headers["referrer-policy"], "no-referrer");
   assert.equal(res.headers["cache-control"], "no-store");
+  assert.equal(res.headers["referrer-policy"], referrerPolicy || "no-referrer");
 }
 
 function queryFor(mode) {
@@ -198,11 +198,12 @@ test("valid token returns 200 on /v and the legacy path", async () => {
     assert.equal(page.statusCode, 200);
     assert.match(page.headers["content-type"], /text\/html;\s*charset=utf-8/i);
     assert.match(page.body, /<meta charset="utf-8">/);
-    assert.match(page.body, /<meta name="referrer" content="no-referrer">/);
+    assert.match(page.body, /<meta name="referrer" content="strict-origin-when-cross-origin">/);
     assert.match(page.body, /<title>TulipFleet — T-1<\/title>/);
-    assert.match(page.body, /referrerPolicy:\s*'no-referrer'/);
+    assert.match(page.body, /referrerPolicy:\s*'strict-origin'/);
     assert.match(page.body, new RegExp("/v/" + TOKEN + "\\.json"));
-    assertNoIndex(page);
+    assertNoIndex(page, "strict-origin-when-cross-origin");
+    assert.equal(res.headers["referrer-policy"], "no-referrer");
   } finally {
     await app.close();
   }
@@ -272,6 +273,8 @@ test("assigned task hides live location and the 404 page is utf-8", async () => 
     assert.match(page.headers["content-type"], /charset=utf-8/i);
     assert.match(page.body, /Araç yola çıktığında canlı konum burada görünecek/);
     assert.match(page.body, /"assigned":"Atandı"/);
+    assertNoIndex(page, "strict-origin-when-cross-origin");
+    assert.equal(res.headers["referrer-policy"], "no-referrer");
   } finally {
     await app.close();
   }
@@ -285,7 +288,8 @@ test("assigned task hides live location and the 404 page is utf-8", async () => 
     assert.match(html.body, /<title>TulipFleet — Link geçersiz<\/title>/);
     assert.match(html.body, /Link geçersiz veya süresi dolmuş/);
     assert.equal(html.body.includes("geÃ"), false);
-    assertNoIndex(html);
+    assert.match(html.body, /<meta name="referrer" content="strict-origin-when-cross-origin">/);
+    assertNoIndex(html, "strict-origin-when-cross-origin");
 
     const legacy = await missing.inject({
       method: "GET",
@@ -293,7 +297,7 @@ test("assigned task hides live location and the 404 page is utf-8", async () => 
     });
     assert.equal(legacy.statusCode, 404);
     assert.match(legacy.headers["content-type"], /charset=utf-8/i);
-    assertNoIndex(legacy);
+    assertNoIndex(legacy, "strict-origin-when-cross-origin");
   } finally {
     await missing.close();
   }
