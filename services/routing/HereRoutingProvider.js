@@ -16,6 +16,10 @@
 require("./contract"); // JSDoc typedefs only (no runtime export)
 const { decodeLatLng } = require("../../utils/herePolyline");
 
+const HERE_TIMEOUT_MS = Number(process.env.HERE_TIMEOUT_MS) > 0
+  ? Number(process.env.HERE_TIMEOUT_MS)
+  : 8000;
+
 class HereRoutingProvider {
   constructor() {
     /** @type {import("./contract").ProviderCapabilities} */
@@ -63,7 +67,8 @@ class HereRoutingProvider {
       "&apiKey=" +
       HERE_KEY;
 
-    const res = await fetch(url);
+    // Bounded wait: a hung HERE call must not pin a pool client or a request.
+    const res = await fetch(url, { signal: AbortSignal.timeout(HERE_TIMEOUT_MS) });
     const data = await res.json();
 
     const section = data?.routes?.[0]?.sections?.[0];

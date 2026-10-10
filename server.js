@@ -24,6 +24,7 @@ const {
   publicTrackUrl,
   revokePublicTrackingBestEffort,
   PUBLIC_TRACK_CLOSED,
+  warmPublicRoute,
 } = require("./routes/publicTrack");
 const nodemailer = require("nodemailer");
 const QRCode = require("qrcode");
@@ -5295,6 +5296,12 @@ fastify.put(
         createdByRole: request.user.role,
       });
       await client.query("COMMIT");
+      // Rota tutarliligi (10 Eki): surucu navigasyonu ve takip sayfasi ayni
+      // route_json.public_route geometrisini okur. HERE cagrisi arka planda,
+      // yaniti bekletmez; hata yalnizca loglanir (takip linki acilinca tekrar dener).
+      setImmediate(() => {
+        warmPublicRoute(fastify, id, request.log).catch(() => {});
+      });
       return { success: true, task: rows[0] };
     } catch (error) {
       await client.query("ROLLBACK");

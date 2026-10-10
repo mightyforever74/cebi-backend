@@ -1239,6 +1239,64 @@ function publicReferrerPolicy(url) {
     : "strict-origin-when-cross-origin";
 }
 
+// Warm the HERE road cache for a task outside the public page.
+// Called best-effort by the driver start endpoint so the mobile navigation
+// screen and the tracking page read the same route_json.public_route geometry.
+// Never throws; returns the geometry or null. Takes its own pool client.
+async function warmPublicRoute(fastify, taskId, logger) {
+  if (!fastify || !fastify.pg || !taskId) return null;
+  let client;
+  try {
+    client = await fastify.pg.connect();
+    const { rows } = await client.query(
+      `SELECT t.start_location, t.end_location, t.route_json,
+              d.pickup_location, d.dropoff_location
+       FROM tasks t
+       LEFT JOIN enterprise.dispatch_tasks d ON d.id = t.enterprise_dispatch_task_id
+       WHERE t.id = $1`,
+      [taskId]
+    );
+    if (!rows.length) return null;
+    const task = rows[0];
+    const routeJson = asObject(task.route_json) || {};
+    const existing = cachedGeometry(routeJson);
+    if (existing) return existing;
+    const route = {
+      origin: resolveRoutePoint(
+        routeJson.origin,
+        task.pickup_location,
+        task.start_location || null
+      ),
+      destination: resolveRoutePoint(
+        routeJson.destination,
+        task.dropoff_location,
+        task.end_location || null
+      ),
+    };
+    if (!route.origin || !route.destination) return null;
+    return await ensureRoadGeometry(
+      client,
+      taskId,
+      route,
+      routeJson,
+      trackProvider(fastify),
+      logger
+    );
+  } catch (err) {
+    logOnce(
+      ROUTE_FAIL_LOGGED,
+      "warm:" + String(taskId),
+      logger,
+      "warn",
+      "public route warm failed",
+      { code: err && err.code ? err.code : "WARM" }
+    );
+    return null;
+  } finally {
+    if (client && typeof client.release === "function") client.release();
+  }
+}
+
 async function publicTrackRoutes(fastify) {
   fastify.addHook("onRequest", async (request, reply) => {
     reply.header("X-Robots-Tag", "noindex, nofollow");
@@ -1264,3 +1322,4 @@ module.exports.publicTrackUrl = publicTrackUrl;
 module.exports.revokePublicTrackingBestEffort = revokePublicTrackingBestEffort;
 module.exports.PUBLIC_TRACK_CLOSED = PUBLIC_TRACK_CLOSED;
 module.exports.timingSafeTokenEqual = timingSafeTokenEqual;
+module.exports.warmPublicRoute = warmPublicRoute;
