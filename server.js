@@ -1242,16 +1242,22 @@ fastify.put(
     preHandler: [fastify.authenticate],
   },
   async (request, reply) => {
-    const { firstName, lastName, phone } = request.body;
+    const { firstName, lastName, phone, language } = request.body;
     const userId = request.user.id;
 
     try {
+      // P1-3b (10 Eki): mobil dil degistirince (i18n.changeLanguage) backend'e
+      // de yazsin diye eklendi. COALESCE: alan gonderilmezse (eski mobil
+      // surumu, ya da yalniz ad/soyad guncelleyen cagri) mevcut dil DEGISMEZ -
+      // onceki firstName/lastName/phone davranisinin aksine burada sessiz
+      // NULL'a dusme riski yok.
       const result = await fastify.pg.query(
         `UPDATE users
-       SET first_name = $1, last_name = $2, phone = $3, updated_at = NOW()
-       WHERE id = $4
-       RETURNING id, email, first_name, last_name, phone`,
-        [firstName, lastName, phone, userId]
+       SET first_name = $1, last_name = $2, phone = $3,
+           language = COALESCE($4, language), updated_at = NOW()
+       WHERE id = $5
+       RETURNING id, email, first_name, last_name, phone, language`,
+        [firstName, lastName, phone, language || null, userId]
       );
 
       if (result.rows.length === 0) {

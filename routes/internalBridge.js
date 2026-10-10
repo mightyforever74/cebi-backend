@@ -35,18 +35,56 @@
  *   FN-18 karar loguna (Faz C) muhurleyebilsin.
  */
 
+// P1-3b (10 Eki, TODO_ACTIVE §4 "FCM/push sablonu ... kullanici diline gore"):
+// public.users.language zaten var (kayitta INSERT edilir, sendOTPEmail zaten
+// kullanir) ama push hic okumuyordu - her surucu sabit TR metin aliyordu.
+// Karar (Cem, 10 Eki): TR/EN/NL icin tam sablon; mobilin desteklediği diger
+// diller (de/fr/it/bg/es/ku) veya eksik/bilinmeyen deger EN'e duser.
+const SUPPORTED_PUSH_LANGUAGES = new Set(["tr", "en", "nl"]);
+
+const PUSH_TEMPLATES = {
+  taskAssigned: {
+    tr: (v) => ({
+      title: "Yeni Görev Atandı",
+      body: `${v.taskNo}: ${v.startLabel} → ${v.endLabel}`,
+    }),
+    en: (v) => ({
+      title: "New Task Assigned",
+      body: `${v.taskNo}: ${v.startLabel} → ${v.endLabel}`,
+    }),
+    nl: (v) => ({
+      title: "Nieuwe taak toegewezen",
+      body: `${v.taskNo}: ${v.startLabel} → ${v.endLabel}`,
+    }),
+  },
+};
+
+/** tr/en/nl pass through; anything else (including null/undefined/unknown) -> en. */
+function resolvePushLanguage(language) {
+  return SUPPORTED_PUSH_LANGUAGES.has(language) ? language : "en";
+}
+
+/** Renders a push template's {title, body} for the resolved language. */
+function renderPushCopy(templateKey, language, vars) {
+  const template = PUSH_TEMPLATES[templateKey];
+  const lang = resolvePushLanguage(language);
+  return template[lang](vars || {});
+}
+
 // Best-effort push gonderimi. Hata firlatmaz (no-throw), cagiran kodu etkilemez.
-async function sendPushNotification(fastify, { userId, title, body, data }) {
+async function sendPushNotification(fastify, { userId, templateKey, vars, data }) {
   if (!userId) return;
   try {
     const client = await fastify.pg.connect();
     let pushToken = null;
+    let language = null;
     try {
       const { rows } = await client.query(
-        "SELECT expo_push_token FROM users WHERE id = $1",
+        "SELECT expo_push_token, language FROM users WHERE id = $1",
         [userId]
       );
       pushToken = rows[0]?.expo_push_token || null;
+      language = rows[0]?.language || null;
     } finally {
       client.release();
     }
@@ -58,6 +96,8 @@ async function sendPushNotification(fastify, { userId, title, body, data }) {
       );
       return;
     }
+
+    const { title, body } = renderPushCopy(templateKey, language, vars);
 
     const res = await fetch("https://exp.host/--/api/v2/push/send", {
       method: "POST",
@@ -304,8 +344,8 @@ async function internalBridgeRoutes(fastify) {
       if (user_id) {
         sendPushNotification(fastify, {
           userId: user_id,
-          title: "Yeni Görev Atandı",
-          body: `${task_no}: ${start_location_str} → ${end_location_str}`,
+          templateKey: "taskAssigned",
+          vars: { taskNo: task_no, startLabel: start_location_str, endLabel: end_location_str },
           data: { taskNo: insertedTask[0].task_no, taskId: insertedTask[0].id },
         }).catch(() => {}); // ekstra guvenlik agi, fonksiyon zaten no-throw
       }
@@ -336,3 +376,7 @@ async function internalBridgeRoutes(fastify) {
 }
 
 module.exports = internalBridgeRoutes;
+module.exports.sendPushNotification = sendPushNotification;
+module.exports.renderPushCopy = renderPushCopy;
+module.exports.resolvePushLanguage = resolvePushLanguage;
+
