@@ -16,6 +16,7 @@ const redisClient = new Redis({
 redisClient.on("connect", () => console.log("✅ Redis Geofence Connected"));
 redisClient.on("error", (err) => console.error("[REDIS] Error:", err.message));
 const bcrypt = require("bcryptjs");
+const { acknowledgeAlert } = require("./routes/alertsHelpers");
 const { startGeofenceConsumer } = require("./services/geofenceService");
 const { createProvider } = require("./services/routing/factory");
 const routingProvider = createProvider();
@@ -122,7 +123,9 @@ async function saveLocationData(deviceId, data) {
         [deviceId]
       );
       if (vres.rows.length > 0) companyId = vres.rows[0].company_id;
-    } catch (e) { /* location yazimini asla bloklama */ }
+    } catch (e) {
+      /* location yazimini asla bloklama */
+    }
 
     // 1. Insert location data
     await client.query(
@@ -2740,6 +2743,40 @@ fastify.put(
   }
 );
 
+// POST /api/alerts/:id/ack - Uyarıyı onayla (dispatcher "Onayla" aksiyonu)
+fastify.post(
+  "/api/alerts/:id/ack",
+  { preHandler: [fastify.authenticate] },
+  async (request, reply) => {
+    const { id } = request.params;
+    const companyId = request.companyId;
+    const userId = request.user.id;
+
+    const client = await fastify.pg.connect();
+    try {
+      const result = await acknowledgeAlert(client, {
+        alertId: id,
+        companyId,
+        userId,
+      });
+
+      if (!result.ok && result.reason === "not_found") {
+        return reply.code(404).send({ error: "Alert not found" });
+      }
+      if (!result.ok && result.reason === "already_acknowledged") {
+        return reply.code(400).send({ error: "Alert already acknowledged" });
+      }
+
+      return { success: true, alert: result.alert };
+    } catch (err) {
+      request.log.error(err);
+      return reply.code(500).send({ error: "Failed to acknowledge alert" });
+    } finally {
+      client.release();
+    }
+  }
+);
+
 // DELETE /api/alerts - Tüm uyarıları sil (company bazlı)
 fastify.delete(
   "/api/alerts",
@@ -5314,7 +5351,11 @@ fastify.put(
       // FEAT-010 SS3.6 - yaris durumu emniyeti: kontrol ile UPDATE arasinda baska
       // istek in_progress yazdiysa uniq_driver_single_in_progress 23505 firlatir;
       // bu da kural ihlalidir, 500 degil 409 doner.
-      if (error && error.code === "23505" && error.constraint === "uniq_driver_single_in_progress") {
+      if (
+        error &&
+        error.code === "23505" &&
+        error.constraint === "uniq_driver_single_in_progress"
+      ) {
         return reply.code(409).send({
           error: "Conflict",
           message:
