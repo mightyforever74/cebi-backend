@@ -6,6 +6,9 @@ const mqtt = require("mqtt");
 const bcrypt = require("bcryptjs");
 const { acknowledgeAlert } = require("./routes/alertsHelpers");
 const { fetchVehicleTrack } = require("./routes/vehicleTrackHelpers");
+const {
+  scheduleDailyTelematicsBatch,
+} = require("./FEAT-007-EXT-virtual-telematics/06-cron/dailyTelematicsScheduler");
 // 11 Ekim 2026: legacy sunucu-taraflı geofence kontrol fonksiyonu
 // (routes/geofenceCheckHelpers.js) kaldırıldı — bozuk sorgu (var olmayan
 // kolonlar), hiçbir zaman çalışmıyordu (prod geofence_events = 0 satır).
@@ -6304,6 +6307,11 @@ const start = async () => {
     fastify.log.info(`Server running on port ${PORT}`);
     fastify.mqtt = mqttClient;
     startGeofenceConsumer(fastify);
+
+    // FEAT-007-EXT Virtual Telematics — 11 Ekim 2026, multi-tenant +
+    // otomatik zamanlama (Cem'in kararı). Her gün 02:00'da fuelSnapshotBatch
+    // -> reconcileBatch -> correlationBatch sırayla çalışır.
+    scheduleDailyTelematicsBatch(fastify);
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);
