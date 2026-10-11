@@ -60,6 +60,20 @@ function queryFor(mode) {
       return { rows: [{ status: statusFor(mode) }] };
     }
     if (s.includes("task_no, title")) {
+      if (mode === "branded") {
+        return {
+          rows: [
+            {
+              task_no: "T-1",
+              title: "Delivery",
+              company_name: "Acme BV",
+              company_settings: {
+                branding: { logoUrl: "https://acme.nl/logo.png", brandColor: "#112233" },
+              },
+            },
+          ],
+        };
+      }
       return { rows: [{ task_no: "T-1", title: "Delivery" }] };
     }
     if (s.includes("vehicle_plate")) {
@@ -191,6 +205,7 @@ test("valid token returns 200 on /v and the legacy path", async () => {
     assert.equal(res.statusCode, 200);
     const body = res.json();
     assert.deepEqual(Object.keys(body).sort(), [
+      "branding",
       "eta",
       "events",
       "last_location",
@@ -223,6 +238,33 @@ test("valid token returns 200 on /v and the legacy path", async () => {
     assert.match(page.body, new RegExp("/v/" + TOKEN + "\\.json"));
     assertNoIndex(page, "strict-origin-when-cross-origin");
     assert.equal(res.headers["referrer-policy"], "no-referrer");
+  } finally {
+    await app.close();
+  }
+});
+
+test("markalamasi olan sirket icin logo + ozel renk + sirket adi sayfaya basilir", async () => {
+  const app = await buildApp("branded");
+  try {
+    const page = await app.inject({ method: "GET", url: "/v/" + TOKEN });
+    assert.equal(page.statusCode, 200);
+    assert.match(page.body, /<title>Acme BV — T-1<\/title>/);
+    assert.match(page.body, /<img src="https:\/\/acme\.nl\/logo\.png"/);
+    assert.match(page.body, /\.header \{ background:#112233;/);
+    assert.doesNotMatch(page.body, /name="bus" style="font-size:22px;"/);
+  } finally {
+    await app.close();
+  }
+});
+
+test("markalamasi olmayan sirket icin varsayilan TulipFleet gorunumu korunur", async () => {
+  const app = await buildApp("valid");
+  try {
+    const page = await app.inject({ method: "GET", url: "/v/" + TOKEN });
+    assert.equal(page.statusCode, 200);
+    assert.match(page.body, /<title>TulipFleet — T-1<\/title>/);
+    assert.match(page.body, /name="bus" style="font-size:22px;"/);
+    assert.match(page.body, /\.header \{ background:linear-gradient\(135deg,#5E72E4,#825EE4\);/);
   } finally {
     await app.close();
   }

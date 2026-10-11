@@ -5,6 +5,7 @@ const jwt = require("@fastify/jwt");
 const mqtt = require("mqtt");
 const bcrypt = require("bcryptjs");
 const { acknowledgeAlert } = require("./routes/alertsHelpers");
+const { fetchVehicleTrack } = require("./routes/vehicleTrackHelpers");
 // 11 Ekim 2026: legacy sunucu-taraflı geofence kontrol fonksiyonu
 // (routes/geofenceCheckHelpers.js) kaldırıldı — bozuk sorgu (var olmayan
 // kolonlar), hiçbir zaman çalışmıyordu (prod geofence_events = 0 satır).
@@ -512,6 +513,7 @@ fastify.register(require("./routes/internalBridge"));
 
 fastify.register(require("./routes/driver"), { prefix: "/api/driver" }); // Driver endpoints: assign-device, available-vehicles
 fastify.register(require("./routes/company-plan")); // S5: GET /api/company/plan
+fastify.register(require("./routes/companyBranding")); // §10 MVP-2: GET/PUT /api/company/branding (logo/renk)
 fastify.register(require("./plugins/etag-cache")); // S6: ETag/304 cache for polling endpoints
 fastify.register(require("./routes/geofences")); // Geofence CRUD + edge events
 fastify.register(require("./routes/reports")); // Operations Report
@@ -2428,35 +2430,14 @@ fastify.get(
   { preHandler: [fastify.authenticate] },
   async (request, reply) => {
     const { id } = request.params;
-    const { start, end, limit = 1000 } = request.query;
+    const { start, end, limit } = request.query;
     const client = await fastify.pg.connect();
 
     try {
-      let query = `
-      SELECT l.latitude, l.longitude, l.speed, l.heading, l.time, l.accuracy
-      FROM locations l
-      JOIN vehicles v ON l.device_id = v.esp32_device_id
-      WHERE v.id = $1
-    `;
-      const params = [id];
-      let paramIndex = 2;
-
-      if (start) {
-        query += ` AND l.time >= $${paramIndex}`;
-        params.push(start);
-        paramIndex++;
-      }
-      if (end) {
-        query += ` AND l.time <= $${paramIndex}`;
-        params.push(end);
-        paramIndex++;
-      }
-
-      query += ` ORDER BY l.time ASC LIMIT $${paramIndex}`;
-      params.push(parseInt(limit));
-
-      const result = await client.query(query, params);
-      return { points: result.rows };
+      // §9.7: fetchVehicleTrack DESC+LIMIT ile en SON N noktayı garanti
+      // alıp ASC'ye çevirir — rotanın bitişi (güncel kısmı) her zaman
+      // korunur (bkz. routes/vehicleTrackHelpers.js üstteki yorum).
+      return await fetchVehicleTrack(client, { vehicleId: id, start, end, limit });
     } finally {
       client.release();
     }

@@ -3,6 +3,7 @@
 const crypto = require("crypto");
 const rateLimit = require("@fastify/rate-limit");
 const { createProvider } = require("../services/routing/factory");
+const { resolveBranding } = require("./companyBrandingHelpers");
 
 const PUBLIC_TRACK_BASE_DEFAULT = "https://track.tulipfleet.com/v";
 const PUBLIC_TRACK_JSON_404 = { error: "Invalid or expired link" };
@@ -447,10 +448,12 @@ async function publicTrackJson(fastify, request, reply) {
       `SELECT t.task_no, t.status, t.title, t.start_location, t.end_location,
               t.waypoints, t.actual_start, t.actual_end, t.route_json,
               d.pickup_location, d.dropoff_location,
-              v.plate_no as vehicle_plate
+              v.plate_no as vehicle_plate,
+              c.name AS company_name, c.settings AS company_settings
        FROM tasks t
        LEFT JOIN vehicles v ON t.vehicle_id = v.id
        LEFT JOIN enterprise.dispatch_tasks d ON d.id = t.enterprise_dispatch_task_id
+       LEFT JOIN companies c ON c.id = t.company_id
        WHERE t.id = $1`,
       [taskId]
     );
@@ -458,6 +461,12 @@ async function publicTrackJson(fastify, request, reply) {
       return reply.code(404).send(PUBLIC_TRACK_JSON_404);
 
     const task = taskRows[0];
+    // §10 MVP-2 "markalı sayfa": native/mobil tarafın da kullanabilmesi için
+    // JSON yüzeyine de eklendi (HTML sayfası kendi render'ını ayrıca yapar).
+    const branding = resolveBranding({
+      name: task.company_name,
+      settings: task.company_settings,
+    });
     const live = PUBLIC_TRACK_LIVE.has(String(task.status || ""));
 
     // Events — public fields only (no event id, no stop id)
@@ -556,6 +565,11 @@ async function publicTrackJson(fastify, request, reply) {
         route,
         last_location: live ? lastLocation : null,
         eta: live ? eta : null,
+        branding: {
+          company_name: branding.companyName,
+          logo_url: branding.logoUrl,
+          brand_color: branding.brandColor,
+        },
         updated_at: new Date().toISOString(),
       })
     );
@@ -918,11 +932,26 @@ async function publicTrackHtml(fastify, request, reply) {
     }
 
     const { rows: taskRows } = await client.query(
-      "SELECT task_no, title FROM tasks WHERE id = $1",
+      `SELECT task_no, title, c.name AS company_name, c.settings AS company_settings
+       FROM tasks t
+       LEFT JOIN companies c ON c.id = t.company_id
+       WHERE t.id = $1`,
       [taskId]
     );
     const taskNo = taskRows[0]?.task_no || "";
-    const pageTitle = "TulipFleet — " + taskNo;
+    const branding = resolveBranding(
+      taskRows[0]
+        ? { name: taskRows[0].company_name, settings: taskRows[0].company_settings }
+        : null
+    );
+    const brandLabel = branding.companyName || "TulipFleet";
+    const pageTitle = brandLabel + " — " + taskNo;
+    const headerBrand = branding.isDefault
+      ? "linear-gradient(135deg,#5E72E4,#825EE4)"
+      : branding.brandColor;
+    const headerLogoHtml = branding.logoUrl
+      ? '<img src="' + escapeHtml(branding.logoUrl) + '" alt="" style="height:26px;max-width:120px;object-fit:contain;" />'
+      : '<ion-icon name="bus" style="font-size:22px;"></ion-icon>';
 
     const routeUrl =
       (request.routeOptions && request.routeOptions.url) ||
@@ -944,7 +973,7 @@ async function publicTrackHtml(fastify, request, reply) {
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body { font-family:'Segoe UI',Arial,sans-serif; background:#f5f7fa; color:#333; }
-    .header { background:linear-gradient(135deg,#5E72E4,#825EE4); color:#fff; padding:16px 24px; display:flex; align-items:center; gap:12px; }
+    .header { background:${headerBrand}; color:#fff; padding:16px 24px; display:flex; align-items:center; gap:12px; }
     .header h1 { font-size:18px; font-weight:600; }
     .header .badge { background:rgba(255,255,255,0.2); padding:4px 12px; border-radius:20px; font-size:12px; }
     .lang-select { margin-left:auto; background:rgba(255,255,255,0.2); border:none; color:#fff; padding:4px 8px; border-radius:8px; font-size:12px; cursor:pointer; }
@@ -983,7 +1012,7 @@ async function publicTrackHtml(fastify, request, reply) {
 </head>
 <body>
   <div class="header">
-    <ion-icon name="bus" style="font-size:22px;"></ion-icon>
+    ${headerLogoHtml}
     <h1>${escapeHtml(pageTitle)}</h1>
     <span class="badge" id="statusBadge">${t.loading}</span>
     <select class="lang-select" onchange="location.href='?lang='+this.value">
