@@ -1,6 +1,11 @@
 // /opt/fleet/backend/services/geofenceService.js  (v2 — contract v1 uyumlu)
 'use strict';
 
+const {
+  findGeofenceMatchIndex,
+  applyGeofenceVisit,
+} = require('./waypointGeofenceHelpers');
+
 const CONFIG_VERSION_CACHE = new Map(); // chipId → last published version
 
 // ── Helper: MQTT publish — promisify garantisi (Fix 8) ───────
@@ -378,6 +383,44 @@ async function handleGeofenceEvent(fastify, topic, message) {
     );
 
     fastify.log.info(`[GF] Recorded: ${rawType} zone="${zone.name}" vehicle=${plate_no}`);
+
+    // ── 9b. Waypoint auto-visit (Waypoint Geofence Faz 1) ────
+    // Entry-only: an "exit" event doesn't mean a stop was completed.
+    // Resilience: never let a waypoint-update failure block FCM/CSRD below —
+    // same philosophy as the suspicious-event handling above (log, don't abort).
+    if (rawType === 'entry' && vehicle_id) {
+      try {
+        await client.query('BEGIN');
+        const { rows: taskRows } = await client.query(
+          `SELECT id, waypoints FROM tasks
+           WHERE vehicle_id = $1 AND status = 'in_progress'
+           ORDER BY actual_start DESC NULLS LAST
+           LIMIT 1 FOR UPDATE`,
+          [vehicle_id]
+        );
+        if (taskRows.length > 0) {
+          const task = taskRows[0];
+          const matchIdx = findGeofenceMatchIndex(task.waypoints, zone.id);
+          if (matchIdx !== -1) {
+            const updatedWaypoints = applyGeofenceVisit(
+              task.waypoints, matchIdx,
+              timestamp ? new Date(timestamp).toISOString() : new Date().toISOString()
+            );
+            await client.query(
+              `UPDATE tasks SET waypoints = $1, updated_at = NOW() WHERE id = $2`,
+              [JSON.stringify(updatedWaypoints), task.id]
+            );
+            fastify.log.info(
+              `[GF] Waypoint auto-visited: task=${task.id} idx=${matchIdx} zone="${zone.name}"`
+            );
+          }
+        }
+        await client.query('COMMIT');
+      } catch (wpErr) {
+        await client.query('ROLLBACK').catch(() => {});
+        fastify.log.warn({ wpErr }, '[GF] Waypoint auto-visit failed — skipped');
+      }
+    }
 
     // ── 10. FCM push ─────────────────────────────────────────
     if (fastify.fcm && alertRes.rows.length > 0) {

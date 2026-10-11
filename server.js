@@ -15,6 +15,10 @@ const {
 // Tek yetkili geofence tespit mercii artık v2-contract
 // services/geofenceService.js (cihaz-taraflı tespit + sunucu doğrulama/dedup).
 const { startGeofenceConsumer } = require("./services/geofenceService");
+const {
+  applyRouteBypass,
+  safeWaypoints,
+} = require("./services/waypointGeofenceHelpers");
 const { createProvider } = require("./services/routing/factory");
 const routingProvider = createProvider();
 const crypto = require("crypto");
@@ -3263,6 +3267,64 @@ fastify.get(
   }
 );
 
+// ═══════════════════════════════════════════════════════════════
+// GET /api/tasks/:id/waypoint-summary - Waypoint Geofence Faz 1
+// Read-only rollup: total/visited/bypassed/required-missed counts.
+// ═══════════════════════════════════════════════════════════════
+fastify.get(
+  "/api/tasks/:id/waypoint-summary",
+  { preHandler: [fastify.authenticate] },
+  async (request, reply) => {
+    const { id } = request.params;
+    const userId = request.user.id;
+    const client = await fastify.pg.connect();
+
+    try {
+      const { rows: driverRows } = await client.query(
+        "SELECT id FROM drivers WHERE user_id = $1",
+        [userId]
+      );
+
+      let query, params;
+      if (driverRows.length > 0) {
+        query = "SELECT waypoints FROM tasks WHERE id = $1 AND driver_id = $2";
+        params = [id, driverRows[0].id];
+      } else {
+        query = "SELECT waypoints FROM tasks WHERE id = $1 AND company_id = $2";
+        params = [id, request.companyId];
+      }
+
+      const { rows } = await client.query(query, params);
+      if (rows.length === 0) {
+        return reply.code(404).send({ error: "Task not found" });
+      }
+
+      const waypoints = safeWaypoints(rows[0].waypoints);
+      const total = waypoints.length;
+      const visited = waypoints.filter((wp) => wp.visited === true).length;
+      const bypassed = waypoints.filter(
+        (wp) => wp.completion_reason === "route_bypass"
+      ).length;
+      const requiredMissed = waypoints.filter(
+        (wp) => wp.required === true && wp.visited !== true && wp.completion_reason !== "route_bypass"
+      ).length;
+
+      return {
+        task_id: id,
+        total_waypoints: total,
+        visited_count: visited,
+        bypassed_count: bypassed,
+        required_missed_count: requiredMissed,
+      };
+    } catch (error) {
+      request.log.error(error);
+      return reply.code(500).send({ error: "Internal server error" });
+    } finally {
+      client.release();
+    }
+  }
+);
+
 fastify.post(
   "/api/tasks",
   { preHandler: [fastify.authenticate] },
@@ -5456,6 +5518,29 @@ fastify.put(
         );
       }
       // Sprint A2-A3 sonu
+
+      // Waypoint Geofence Faz 1: required-but-unvisited waypoints get closed
+      // out as "route_bypass" rather than silently left incomplete. The
+      // row was already locked by the UPDATE at the top of this transaction
+      // (same client, still open), so no extra SELECT...FOR UPDATE is needed
+      // here to avoid a race with a concurrent geofence-entry auto-visit.
+      try {
+        const { waypoints: bypassedWaypoints, bypassedCount } = applyRouteBypass(
+          rows[0].waypoints,
+          new Date().toISOString()
+        );
+        if (bypassedCount > 0) {
+          await client.query(
+            "UPDATE tasks SET waypoints = $1, updated_at = NOW() WHERE id = $2",
+            [JSON.stringify(bypassedWaypoints), id]
+          );
+          request.log.info(
+            `Waypoint route_bypass: task=${id} count=${bypassedCount}`
+          );
+        }
+      } catch (wpErr) {
+        request.log.warn({ wpErr }, "Waypoint route_bypass failed — skipped");
+      }
 
       await revokePublicTrackingBestEffort(client, id, request.log);
       await client.query("COMMIT");
