@@ -3,21 +3,13 @@ const fastify = require("fastify")({ logger: true });
 const cors = require("@fastify/cors");
 const jwt = require("@fastify/jwt");
 const mqtt = require("mqtt");
-
-// Redis Client (geofence previousLat/previousLng)
-const Redis = require("ioredis");
-const redisClient = new Redis({
-  host: process.env.REDIS_HOST || "fleet-redis",
-  port: parseInt(process.env.REDIS_PORT) || 6379,
-  password: process.env.REDIS_PASSWORD,
-  lazyConnect: true,
-  retryStrategy: (times) => Math.min(times * 100, 3000),
-});
-redisClient.on("connect", () => console.log("✅ Redis Geofence Connected"));
-redisClient.on("error", (err) => console.error("[REDIS] Error:", err.message));
 const bcrypt = require("bcryptjs");
 const { acknowledgeAlert } = require("./routes/alertsHelpers");
-const { checkGeofences } = require("./routes/geofenceCheckHelpers");
+// 11 Ekim 2026: legacy sunucu-taraflı geofence kontrol fonksiyonu
+// (routes/geofenceCheckHelpers.js) kaldırıldı — bozuk sorgu (var olmayan
+// kolonlar), hiçbir zaman çalışmıyordu (prod geofence_events = 0 satır).
+// Tek yetkili geofence tespit mercii artık v2-contract
+// services/geofenceService.js (cihaz-taraflı tespit + sunucu doğrulama/dedup).
 const { startGeofenceConsumer } = require("./services/geofenceService");
 const { createProvider } = require("./services/routing/factory");
 const routingProvider = createProvider();
@@ -199,77 +191,12 @@ async function saveLocationData(deviceId, data) {
         " | online=true"
     );
 
-    // Geofence kontrolü - vehicle_id ve company_id bul
-    try {
-      const geoClient = await fastify.pg.connect();
-      let vehId = null,
-        compId = null;
-      try {
-        const vehRes = await geoClient.query(
-          "SELECT v.id, v.company_id FROM vehicles v JOIN devices d ON d.vehicle_id = v.id WHERE d.serial=$1 OR d.serial_number=$1 OR d.device_code=$1 OR d.esp_chip_id=$1 LIMIT 1",
-          [deviceId]
-        );
-        if (vehRes.rows.length > 0) {
-          vehId = vehRes.rows[0].id;
-          compId = vehRes.rows[0].company_id;
-        }
-      } finally {
-        geoClient.release();
-      }
-      // Redis'ten previous location oku (teleport koruması)
-      const rKey = `geofence:prev:${deviceId}`;
-      let prevLat = null,
-        prevLng = null;
-      try {
-        const prev = await redisClient.get(rKey);
-        if (prev) {
-          const p = JSON.parse(prev);
-          prevLat = p.lat;
-          prevLng = p.lng;
-        }
-      } catch (rErr) {
-        console.error("[REDIS] Read error:", rErr.message);
-      }
-
-      const geofenceCheckClient = await fastify.pg.connect();
-      try {
-        await checkGeofences(
-          geofenceCheckClient,
-          {
-            deviceId,
-            companyId: compId,
-            vehicleId: vehId,
-            latitude: data.latitude,
-            longitude: data.longitude,
-            speed,
-            previousLat: prevLat,
-            previousLng: prevLng,
-            // Harita Dokumani v2 §9.6: violation_time = location_time,
-            // server NOW() degil. `timestamp`, bu handler'in basinda
-            // (satir ~107) MQTT paketinden validate edilmis gercek konum
-            // zamanidir.
-            locationTime: timestamp,
-          },
-          fastify.log
-        );
-      } finally {
-        geofenceCheckClient.release();
-      }
-
-      // Redis'e mevcut konumu kaydet (TTL: 2 saat)
-      try {
-        await redisClient.set(
-          rKey,
-          JSON.stringify({ lat: data.latitude, lng: data.longitude }),
-          "EX",
-          7200
-        );
-      } catch (rErr) {
-        console.error("[REDIS] Write error:", rErr.message);
-      }
-    } catch (geoErr) {
-      console.error("[GEOFENCE] Error:", geoErr.message);
-    }
+    // 11 Ekim 2026: legacy sunucu-taraflı geofence kontrol fonksiyonu
+    // (ve Redis previousLat/previousLng teleport koruması) kaldırıldı. Geofence
+    // tespiti artık tamamen v2-contract: cihaz firmware'i (v4.7.0+) kendi
+    // tespitini yapıp `fleet/device/{id}/geofence_event` topic'ine yayınlıyor,
+    // services/geofenceService.js:handleGeofenceEvent() bunu işliyor. Bu
+    // konum (location) ingest akışının geofence ile ilgisi kalmadı.
   } finally {
     client.release();
   }
@@ -6998,14 +6925,6 @@ fastify.post("/api/contact", async (request, reply) => {
   }
 });
 // ============================================
-
-// ============================================
-// GEOFENCE HELPERS
-// ============================================
-// Paket D (zorunlu) — checkGeofences, getDistanceMeters, isPointInCircle,
-// isPointInPolygon, isTimeRestrictionActive artik routes/geofenceCheckHelpers.js
-// icinde (testability + Harita Dokumani v2 §9.6 locationTime fix icin
-// 11 Eki 2026'da tasindi). Asagidaki cagri yerine bkz.: L~233.
 
 // ── DELETE /api/users/me ─────────────────────────────────
 // Apple App Store Guidelines 5.1.1 — hesap silme zorunluluğu
