@@ -17,6 +17,7 @@ redisClient.on("connect", () => console.log("✅ Redis Geofence Connected"));
 redisClient.on("error", (err) => console.error("[REDIS] Error:", err.message));
 const bcrypt = require("bcryptjs");
 const { acknowledgeAlert } = require("./routes/alertsHelpers");
+const { checkGeofences } = require("./routes/geofenceCheckHelpers");
 const { startGeofenceConsumer } = require("./services/geofenceService");
 const { createProvider } = require("./services/routing/factory");
 const routingProvider = createProvider();
@@ -230,16 +231,30 @@ async function saveLocationData(deviceId, data) {
         console.error("[REDIS] Read error:", rErr.message);
       }
 
-      await checkGeofences(fastify, {
-        deviceId,
-        companyId: compId,
-        vehicleId: vehId,
-        latitude: data.latitude,
-        longitude: data.longitude,
-        speed,
-        previousLat: prevLat,
-        previousLng: prevLng,
-      });
+      const geofenceCheckClient = await fastify.pg.connect();
+      try {
+        await checkGeofences(
+          geofenceCheckClient,
+          {
+            deviceId,
+            companyId: compId,
+            vehicleId: vehId,
+            latitude: data.latitude,
+            longitude: data.longitude,
+            speed,
+            previousLat: prevLat,
+            previousLng: prevLng,
+            // Harita Dokumani v2 §9.6: violation_time = location_time,
+            // server NOW() degil. `timestamp`, bu handler'in basinda
+            // (satir ~107) MQTT paketinden validate edilmis gercek konum
+            // zamanidir.
+            locationTime: timestamp,
+          },
+          fastify.log
+        );
+      } finally {
+        geofenceCheckClient.release();
+      }
 
       // Redis'e mevcut konumu kaydet (TTL: 2 saat)
       try {
@@ -6987,193 +7002,10 @@ fastify.post("/api/contact", async (request, reply) => {
 // ============================================
 // GEOFENCE HELPERS
 // ============================================
-function getDistanceMeters(lat1, lng1, lat2, lng2) {
-  const R = 6371000;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) *
-      Math.sin(dLng / 2);
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-function isPointInCircle(lat, lng, cLat, cLng, r) {
-  return getDistanceMeters(lat, lng, cLat, cLng) <= r;
-}
-function isPointInPolygon(lat, lng, polygon) {
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const xi = polygon[i].lat,
-      yi = polygon[i].lng,
-      xj = polygon[j].lat,
-      yj = polygon[j].lng;
-    if (
-      yi > lng !== yj > lng &&
-      lat < ((xj - xi) * (lng - yi)) / (yj - yi) + xi
-    )
-      inside = !inside;
-  }
-  return inside;
-}
-function isTimeRestrictionActive(t) {
-  if (!t?.enabled) return true;
-  const now = new Date(),
-    h = now.getUTCHours(),
-    d = now.getUTCDay();
-  if (t.days && !t.days.includes(d)) return false;
-  return t.start_hour > t.end_hour
-    ? h >= t.start_hour || h < t.end_hour
-    : h >= t.start_hour && h < t.end_hour;
-}
-async function checkGeofences(
-  fastify,
-  {
-    deviceId,
-    companyId,
-    vehicleId,
-    latitude,
-    longitude,
-    speed,
-    previousLat,
-    previousLng,
-  }
-) {
-  try {
-    if (
-      previousLat &&
-      previousLng &&
-      getDistanceMeters(previousLat, previousLng, latitude, longitude) > 3000
-    ) {
-      fastify.log.warn(`Teleport detected vehicle ${vehicleId} — skipped`);
-      return;
-    }
-    const client = await fastify.pg.connect();
-    try {
-      const { rows: geofences } = await client.query(
-        `SELECT * FROM geofences WHERE company_id=$1 AND is_active=true`,
-        [companyId]
-      );
-      if (!geofences.length) return;
-      const now = new Date();
-      for (const fence of geofences) {
-        if (!isTimeRestrictionActive(fence.time_restriction)) continue;
-        let isInside = false;
-        if (fence.fence_type === "circle") {
-          const { lat, lng } = fence.coordinates;
-          isInside = isPointInCircle(
-            latitude,
-            longitude,
-            parseFloat(lat),
-            parseFloat(lng),
-            parseFloat(fence.radius)
-          );
-        } else if (fence.fence_type === "polygon") {
-          isInside = isPointInPolygon(latitude, longitude, fence.coordinates);
-        }
-        const { rows: lastEvents } = await client.query(
-          `SELECT event_type,created_at FROM geofence_events WHERE geofence_id=$1 AND vehicle_id=$2 ORDER BY created_at DESC LIMIT 1`,
-          [fence.id, vehicleId]
-        );
-        const lastEvent = lastEvents[0]?.event_type || null;
-        const lastEventTime = lastEvents[0]?.created_at || null;
-        let eventType = null,
-          durationSeconds = null;
-        if (isInside && lastEvent !== "entry" && fence.alert_on_entry)
-          eventType = "entry";
-        else if (!isInside && lastEvent === "entry" && fence.alert_on_exit) {
-          eventType = "exit";
-          if (lastEventTime)
-            durationSeconds = Math.round(
-              (now - new Date(lastEventTime)) / 1000
-            );
-        }
-        if (!eventType) continue;
-        await client.query(
-          `INSERT INTO geofence_events(geofence_id,company_id,vehicle_id,device_id,event_type,latitude,longitude,speed,duration_seconds)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-          [
-            fence.id,
-            companyId,
-            vehicleId,
-            deviceId,
-            eventType,
-            latitude,
-            longitude,
-            speed || 0,
-            durationSeconds,
-          ]
-        );
-        await client.query(
-          `UPDATE vehicles SET last_geofence_id=$1,last_geofence_event=$2,last_geofence_at=NOW() WHERE id=$3`,
-          [fence.id, eventType, vehicleId]
-        );
-        const severity =
-          fence.fence_category === "depot" && eventType === "exit"
-            ? "critical"
-            : fence.fence_category === "border"
-            ? "critical"
-            : fence.fence_category === "sensitive_area"
-            ? "warning"
-            : fence.fence_category === "emission_zone"
-            ? "warning"
-            : "info";
-        const metadata = {
-          geofence_id: fence.id,
-          geofence_name: fence.name,
-          fence_category: fence.fence_category,
-          event_type: eventType,
-          ...(durationSeconds !== null && {
-            duration_seconds: durationSeconds,
-            duration_minutes: Math.round(durationSeconds / 60),
-            csrd_relevant: fence.fence_category === "emission_zone",
-          }),
-        };
-        const title =
-          eventType === "entry"
-            ? `Bölge Girişi: ${fence.name}`
-            : `Bölge Çıkışı: ${fence.name}${
-                durationSeconds
-                  ? ` (${Math.round(durationSeconds / 60)} dk)`
-                  : ""
-              }`;
-        const description =
-          eventType === "entry"
-            ? `Araç "${fence.name}" bölgesine girdi`
-            : `Araç "${fence.name}" bölgesinden çıktı${
-                durationSeconds
-                  ? `. Kalış: ${Math.round(durationSeconds / 60)} dakika.`
-                  : ""
-              }`;
-        await client.query(
-          `INSERT INTO alerts(company_id,alert_type,severity,device_id,vehicle_id,title,description,latitude,longitude,speed,metadata)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-          [
-            companyId,
-            eventType === "entry" ? "geofence_entry" : "geofence_exit",
-            severity,
-            deviceId,
-            vehicleId,
-            title,
-            description,
-            latitude,
-            longitude,
-            speed || 0,
-            JSON.stringify(metadata),
-          ]
-        );
-        fastify.log.info(
-          `Geofence ${eventType}: "${fence.name}" | vehicle: ${vehicleId}${
-            durationSeconds ? ` | ${Math.round(durationSeconds / 60)}m` : ""
-          }`
-        );
-      }
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    fastify.log.error("Geofence check error:", err);
-  }
-}
+// Paket D (zorunlu) — checkGeofences, getDistanceMeters, isPointInCircle,
+// isPointInPolygon, isTimeRestrictionActive artik routes/geofenceCheckHelpers.js
+// icinde (testability + Harita Dokumani v2 §9.6 locationTime fix icin
+// 11 Eki 2026'da tasindi). Asagidaki cagri yerine bkz.: L~233.
 
 // ── DELETE /api/users/me ─────────────────────────────────
 // Apple App Store Guidelines 5.1.1 — hesap silme zorunluluğu
