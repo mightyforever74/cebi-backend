@@ -57,6 +57,27 @@ const PUSH_TEMPLATES = {
       body: `${v.taskNo}: ${v.startLabel} → ${v.endLabel}`,
     }),
   },
+  // FEAT-010 FN-16 requestDelayReasonFromDriver (Cem, 2026-10-11): dispatcher
+  // taps "Uyandırma Bildirimi Gönder" on a driver_offline exception
+  // (ResolutionActionPanel) -> enterprise-backend calls
+  // POST /api/internal/bridge/delay-reason-request -> this template.
+  // Driver's in-app RESPONSE write-back is a separate, not-yet-built piece
+  // (flagged to Cem, out of scope for this slice) — this template only
+  // covers the outbound push itself.
+  delayReasonRequest: {
+    tr: (v) => ({
+      title: "Gecikme Sebebi",
+      body: `${v.taskNo} görevinde ${v.delayMinutes} dakikalık bir gecikme var. Lütfen uygulamayı açıp durumu bildirin.`,
+    }),
+    en: (v) => ({
+      title: "Delay reason needed",
+      body: `Task ${v.taskNo} is running ${v.delayMinutes} minutes late. Please open the app and let us know what's happening.`,
+    }),
+    nl: (v) => ({
+      title: "Reden voor vertraging",
+      body: `Taak ${v.taskNo} loopt ${v.delayMinutes} minuten vertraging op. Open de app en laat ons weten wat er aan de hand is.`,
+    }),
+  },
 };
 
 /** tr/en/nl pass through; anything else (including null/undefined/unknown) -> en. */
@@ -129,6 +150,35 @@ async function sendPushNotification(fastify, { userId, templateKey, vars, data }
       "[Push] sendPushNotification failed (no-throw)"
     );
   }
+}
+
+/**
+ * requestDelayReasonPush — FEAT-010 FN-16 (Cem, 2026-10-11). Validates the
+ * thin-bridge-contract payload and fires the delayReasonRequest push via
+ * the existing no-throw sendPushNotification. Extracted as its own
+ * function (mirroring sendPushNotification/renderPushCopy) so the route
+ * handler stays a thin wrapper and this logic is unit-testable without a
+ * live Fastify instance.
+ *
+ * @param {{pg: Object, log: Object}} fastify
+ * @param {{driver_id: string, task_no: string, delay_minutes: number}} payload
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ */
+async function requestDelayReasonPush(fastify, payload) {
+  const { driver_id, task_no, delay_minutes } = payload || {};
+
+  if (!driver_id || !task_no || typeof delay_minutes !== "number" || !Number.isFinite(delay_minutes)) {
+    return { ok: false, error: "invalid_input" };
+  }
+
+  await sendPushNotification(fastify, {
+    userId: driver_id,
+    templateKey: "delayReasonRequest",
+    vars: { taskNo: task_no, delayMinutes: delay_minutes },
+    data: { taskNo: task_no, type: "delay_reason_request" },
+  });
+
+  return { ok: true };
 }
 
 async function internalBridgeRoutes(fastify) {
@@ -373,10 +423,26 @@ async function internalBridgeRoutes(fastify) {
       client.release();
     }
   });
+
+  // FEAT-010 FN-16 (Cem, 2026-10-11): enterprise-backend asks the bridge to
+  // push a delay-reason prompt to the driver. Same onRequest auth guard as
+  // /tasks above (registered on this same plugin instance). No DB write —
+  // purely a push dispatch, so unlike /tasks there is no transaction here.
+  fastify.post("/api/internal/bridge/delay-reason-request", async (request, reply) => {
+    const result = await requestDelayReasonPush(fastify, request.body);
+    if (!result.ok) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "driver_id, task_no and delay_minutes (number) are required.",
+      });
+    }
+    return reply.status(200).send({ success: true });
+  });
 }
 
 module.exports = internalBridgeRoutes;
 module.exports.sendPushNotification = sendPushNotification;
 module.exports.renderPushCopy = renderPushCopy;
 module.exports.resolvePushLanguage = resolvePushLanguage;
+module.exports.requestDelayReasonPush = requestDelayReasonPush;
 

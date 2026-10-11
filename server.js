@@ -6,6 +6,8 @@ const mqtt = require("mqtt");
 const bcrypt = require("bcryptjs");
 const { acknowledgeAlert } = require("./routes/alertsHelpers");
 const { fetchVehicleTrack } = require("./routes/vehicleTrackHelpers");
+const { parseVehicleCapacityFields } = require("./routes/vehicleCapacityHelpers");
+const { checkVehicleQuota } = require("./routes/vehicleQuotaHelpers");
 const {
   scheduleDailyTelematicsBatch,
 } = require("./FEAT-007-EXT-virtual-telematics/06-cron/dailyTelematicsScheduler");
@@ -2212,6 +2214,19 @@ fastify.post(
     }
     const client = await fastify.pg.connect();
     try {
+      // TulipFleet Connect Tier A - "Plaka/Kota Korumasi" (Cem, 2026-10-11)
+      if (companyId) {
+        const quota = await checkVehicleQuota(client, companyId);
+        if (!quota.allowed) {
+          return reply.code(403).send({
+            error: "quota_exceeded",
+            message: `Vehicle quota reached (${quota.activeCount}/${quota.maxVehicles}). Request a quota increase via POST /api/subscription/requests.`,
+            active_count: quota.activeCount,
+            max_vehicles: quota.maxVehicles,
+          });
+        }
+      }
+
       // Multi-tenant task code: CCC-YY-NNNNN
       const year = new Date().getFullYear() % 100; // 25
 
@@ -2242,11 +2257,22 @@ fastify.post(
 
       const { rows } = await client.query(
         `
-            INSERT INTO vehicles (plate_no, esp32_device_id, model, brand, year, fuel_type, status, company_id)
-            VALUES ($1, $2, $3, $4, $5, $6, 'available', $7) 
+            INSERT INTO vehicles (plate_no, esp32_device_id, model, brand, year, fuel_type, status, company_id, cargo_capacity_volume_m3, cargo_capacity_weight_kg, hazmat_certified_classes)
+            VALUES ($1, $2, $3, $4, $5, $6, 'available', $7, $8, $9, $10)
             RETURNING *
         `,
-        [plate_no, esp32_device_id, model, brand, year, fuel_type, companyId]
+        [
+          plate_no,
+          esp32_device_id,
+          model,
+          brand,
+          year,
+          fuel_type,
+          companyId,
+          capacity.volumeM3,
+          capacity.weightKg,
+          capacity.hazmatClasses,
+        ]
       );
 
       return reply.code(201).send({ vehicle: rows[0] });
@@ -2274,6 +2300,20 @@ fastify.put(
       return reply.code(400).send({ error: "Company context required" });
     }
 
+    // FEAT-020 Phase 1.1 (2026-10-12): bkz. POST /api/vehicles ustundeki not.
+    // hazmat_certified_classes icin COALESCE'a dogrudan capacity.hazmatClasses
+    // VERILMEZ: alan hic gonderilmediginde parseVehicleCapacityFields bos []
+    // doner (talep tarafiyla simetrik varsayilan), ama COALESCE'ta [] NULL
+    // DEGILDIR ve mevcut veriyi her partial PUT'ta sessizce siler. Bu yuzden
+    // alan body'de YOKSA SQL'e NULL gonderilir (COALESCE eski degeri korur);
+    // VARSA (bos array dahil, bilerek temizleme) capacity.hazmatClasses gider.
+    const capacity = parseVehicleCapacityFields(request.body);
+    if (!capacity.ok) {
+      return reply.code(400).send({ error: capacity.error });
+    }
+    const hazmatClassesParam =
+      request.body.hazmat_certified_classes !== undefined ? capacity.hazmatClasses : null;
+
     const client = await fastify.pg.connect();
     try {
       const { rows: existing } = await client.query(
@@ -2287,15 +2327,18 @@ fastify.put(
 
       const { rows } = await client.query(
         `
-      UPDATE vehicles 
+      UPDATE vehicles
       SET plate_no = COALESCE($1, plate_no),
           esp32_device_id = COALESCE($2, esp32_device_id),
           model = COALESCE($3, model),
           brand = COALESCE($4, brand),
           year = COALESCE($5, year),
           fuel_type = COALESCE($6, fuel_type),
-          status = COALESCE($7, status)
-      WHERE id = $8 AND company_id = $9
+          status = COALESCE($7, status),
+          cargo_capacity_volume_m3 = COALESCE($8, cargo_capacity_volume_m3),
+          cargo_capacity_weight_kg = COALESCE($9, cargo_capacity_weight_kg),
+          hazmat_certified_classes = COALESCE($10::text[], hazmat_certified_classes)
+      WHERE id = $11 AND company_id = $12
       RETURNING *
     `,
         [
@@ -2306,6 +2349,9 @@ fastify.put(
           year,
           fuel_type,
           status,
+          capacity.volumeM3,
+          capacity.weightKg,
+          hazmatClassesParam,
           id,
           companyId,
         ]
