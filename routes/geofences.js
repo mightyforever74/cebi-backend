@@ -16,6 +16,7 @@ const {
   publishConfigToAllDevices,
   buildConfigPayload,
 } = require('../services/geofenceService');
+const { validateGeofencePayload } = require('./geofenceValidation');
 
 // ── Scope validation helper ────────────────────────────────
 async function validateVehicleScope(client, vehicle_id, company_id, reply) {
@@ -279,9 +280,20 @@ module.exports = async function (fastify) {
       if (!name || !coordinates) {
         return reply.status(400).send({ error: 'name ve coordinates zorunlu' });
       }
-      if (fence_type === 'circle' && !radius) {
-        return reply.status(400).send({ error: 'Circle tipi için radius zorunludur' });
+
+      // §9.5: coordinates yapisi (circle {lat,lng} / polygon >=3 nokta),
+      // circle radius sinirlari (10m-5km) ve self-intersecting polygon kontrolu.
+      let coordinatesObj;
+      try {
+        coordinatesObj = typeof coordinates === 'string' ? JSON.parse(coordinates) : coordinates;
+      } catch (e) {
+        return reply.status(400).send({ error: 'coordinates geçerli bir JSON olmalı' });
       }
+      const geoCheck = validateGeofencePayload({ fence_type, coordinates: coordinatesObj, radius });
+      if (!geoCheck.ok) {
+        return reply.status(400).send({ error: geoCheck.error });
+      }
+
       if (start_hour !== null && (start_hour < 0 || start_hour > 23)) {
         return reply.status(400).send({ error: 'start_hour 0-23 arasında olmalı' });
       }
@@ -297,10 +309,10 @@ module.exports = async function (fastify) {
         `INSERT INTO geofences
            (company_id, name, fence_type, coordinates, radius,
             is_active, alert_on_entry, alert_on_exit,
-            category, csrd_tracked, start_hour, end_hour, description,
+            category, fence_category, csrd_tracked, start_hour, end_hour, description,
             zone_key, config_version,
             scope_type, vehicle_id)
-         VALUES ($1,$2,$3,$4,$5, $6,$7,$8, $9,$10,$11,$12,$13,
+         VALUES ($1,$2,$3,$4,$5, $6,$7,$8, $9,$9,$10,$11,$12,$13,
                  LEFT(gen_random_uuid()::text, 8), 1,
                  'vehicle', $14)
          RETURNING *`,
@@ -339,7 +351,7 @@ module.exports = async function (fastify) {
       const companyId = req.user.company_id;
 
       const own = await client.query(
-        'SELECT id, config_version FROM geofences WHERE id = $1 AND company_id = $2',
+        'SELECT id, config_version, fence_type, coordinates, radius FROM geofences WHERE id = $1 AND company_id = $2',
         [id, companyId]
       );
       if (own.rows.length === 0) return reply.status(404).send({ error: 'Zone bulunamadı' });
@@ -357,6 +369,28 @@ module.exports = async function (fastify) {
       }
       if (end_hour !== undefined && end_hour !== null && (end_hour < 0 || end_hour > 23)) {
         return reply.status(400).send({ error: 'end_hour 0-23 arasında olmalı' });
+      }
+
+      // §9.5: kismi güncellemede de NIHAI sekil gecerli olmali — bu yuzden
+      // body'de verilmeyen alanlar icin mevcut DB degeri ile birlestirilip
+      // (merge) o haliyle dogrulanir.
+      const effectiveFenceType = fence_type || current.fence_type;
+      let effectiveCoordinates = coordinates !== undefined ? coordinates : current.coordinates;
+      if (typeof effectiveCoordinates === 'string') {
+        try {
+          effectiveCoordinates = JSON.parse(effectiveCoordinates);
+        } catch (e) {
+          return reply.status(400).send({ error: 'coordinates geçerli bir JSON olmalı' });
+        }
+      }
+      const effectiveRadius = radius !== undefined ? radius : current.radius;
+      const geoCheck = validateGeofencePayload({
+        fence_type: effectiveFenceType,
+        coordinates: effectiveCoordinates,
+        radius: effectiveRadius,
+      });
+      if (!geoCheck.ok) {
+        return reply.status(400).send({ error: geoCheck.error });
       }
 
       // scope validation — vehicle_id geldiyse doğrula
@@ -377,6 +411,7 @@ module.exports = async function (fastify) {
            alert_on_entry = COALESCE($6,  alert_on_entry),
            alert_on_exit  = COALESCE($7,  alert_on_exit),
            category       = COALESCE($8,  category),
+           fence_category = COALESCE($8,  fence_category),
            csrd_tracked   = COALESCE($9,  csrd_tracked),
            start_hour     = $10,
            end_hour       = $11,
