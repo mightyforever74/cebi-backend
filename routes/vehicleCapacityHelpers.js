@@ -66,4 +66,4 @@ function parseHazmatClasses(value) {
   return value;
 }
 
-module.exports = { parseVehicleCapacityFields };
+module.exports = { parseVehicleCapacityFields, parseOptionalNonNegativeNumber, INVALID };

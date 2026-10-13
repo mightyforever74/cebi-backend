@@ -1,6 +1,8 @@
 // routes/driver.js
 // Driver-specific endpoints: validate-serial, available-vehicles, assign-device, complete-setup
 
+const { parseLiveCapacityFields } = require('./liveCapacityHelpers');
+
 module.exports = function (fastify, opts, done) {
   
   // ═══════════════════════════════════════════════════════════
@@ -348,6 +350,67 @@ module.exports = function (fastify, opts, done) {
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });
-  
+
+  // ═══════════════════════════════════════════════════════════
+  // PATCH /api/driver/live-capacity
+  // FEAT-020 Phase 1.3b (Katman C, backend dilimi, 2026-10-13).
+  // Suruculerin mobil uygulamadan bildirdigi ANLIK bos kapasite — Phase
+  // 1.1'in statik cargo_capacity_* kolonlarindan (admin girer, aracin
+  // TOPLAM/MAX kapasitesi) AYRI: bu suruculerin HER SEFER raporunda
+  // degisebilen, o anki BOS kapasitesi. Hazmat bu kapsamin disinda.
+  // Arac, suruculerin su anki AKTIF device_assignments kaydindan
+  // cozulur (complete-setup presedenti) — body'de vehicle_id ALINMAZ,
+  // surucu sadece KENDI aktif aracina rapor verebilir (yetki sizmasi
+  // onlenir).
+  // ═══════════════════════════════════════════════════════════
+  fastify.patch('/live-capacity', {
+    preHandler: [fastify.authenticate]
+  }, async (request, reply) => {
+    const userId = request.user.id;
+
+    const capacity = parseLiveCapacityFields(request.body);
+    if (!capacity.ok) {
+      return reply.status(400).send({ error: capacity.error });
+    }
+
+    try {
+      const conn = await fastify.pg.connect();
+
+      try {
+        const assignmentResult = await conn.query(
+          'SELECT vehicle_id FROM device_assignments WHERE driver_id = $1 AND status = $2',
+          [userId, 'active']
+        );
+
+        if (assignmentResult.rows.length === 0) {
+          return reply.status(404).send({ error: 'NO_ACTIVE_VEHICLE_ASSIGNMENT' });
+        }
+
+        const { vehicle_id } = assignmentResult.rows[0];
+
+        const { rows } = await conn.query(
+          `UPDATE vehicles
+              SET live_cargo_volume_m3 = $1,
+                  live_cargo_weight_kg = $2,
+                  live_cargo_reported_at = NOW()
+            WHERE id = $3
+          RETURNING id, live_cargo_volume_m3, live_cargo_weight_kg, live_cargo_reported_at`,
+          [capacity.volumeM3, capacity.weightKg, vehicle_id]
+        );
+
+        fastify.log.info(
+          `[LIVE_CAPACITY] Driver ${userId} reported live capacity for vehicle ${vehicle_id}`
+        );
+
+        return reply.send({ vehicle: rows[0] });
+      } finally {
+        conn.release();
+      }
+    } catch (error) {
+      fastify.log.error('[LIVE_CAPACITY] Error:', error);
+      return reply.status(500).send({ error: 'Internal server error' });
+    }
+  });
+
   done();
 };
