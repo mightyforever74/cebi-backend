@@ -10,6 +10,15 @@
 -- ON DELETE SET NULL — exception_events bir hypertable, RMA silinse bile
 -- geçmiş exception kaydı kaybolmamalı); (2) exception_type CHECK'i
 -- 'rma_sla_breach' değerini de kapsayacak şekilde genişletir.
+--
+-- DÜZELTME (staging'deki ilk deneme sonrası, 2026-10-14): exception_type
+-- CHECK'i yalnızca create-migration'daki (1782600000000) 18 değeri temel
+-- alınarak yazılmıştı. Ancak migrations/1782800000000_bug1-overlap-foundation.sql
+-- bu constraint'i daha sonra 19. bir değerle ('rule_violation', BUG-1
+-- cascade-delay monitörü) genişletmiş — bu, aşağıdaki listeye dahil
+-- edilmezse, o değeri taşıyan mevcut satırlarda constraint ihlaline yol
+-- açıyordu (nitekim staging'de oldu). Liste artık her iki migration'ın
+-- birleşimi (19 + rma_sla_breach = 20 değer).
 
 ALTER TABLE enterprise.exception_events
   ADD COLUMN IF NOT EXISTS rma_id UUID REFERENCES enterprise.rma_requests(id) ON DELETE SET NULL;
@@ -29,7 +38,8 @@ BEGIN
       'returns_pickup_failed','rts_warehouse_unreachable',
       'invoice_discrepancy','invoice_audit_deadline_expired',
       'rest_violation','border_crossing_compliance_breach',
-      'range_anxiety_breach','csrd_data_quality_breach','rma_sla_breach'
+      'range_anxiety_breach','csrd_data_quality_breach','rule_violation',
+      'rma_sla_breach'
     ));
   RAISE NOTICE 'exception_events.exception_type CHECK constraint rma_sla_breach ile genisletildi.';
 END $$;
