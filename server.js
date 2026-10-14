@@ -1591,6 +1591,7 @@ fastify.put(
           [driverId, id]
         );
         if (activeRows.length > 0) {
+          await client.query("ROLLBACK");
           return reply.code(409).send({
             error: "TASK_CONFLICT",
             message:
@@ -1628,6 +1629,7 @@ fastify.put(
       if (PUBLIC_TRACK_CLOSED.has(String(status || ""))) {
         await revokePublicTrackingBestEffort(client, id, request.log);
       }
+      await client.query("COMMIT");
       return { locations: rows };
     } catch (error) {
       await client.query("ROLLBACK");
