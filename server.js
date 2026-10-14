@@ -276,9 +276,24 @@ async function saveAlertData(deviceId, data) {
 
 // Plugins
 fastify.register(cors, { origin: "*" });
+// SEC (14.10.2026): eskiden process.env.JWT_SECRET || "FleetJWT2024..." idi —
+// yani JWT_SECRET ortam değişkeni herhangi bir sebeple (yanlış deploy,
+// eksik .env, yeni ortam) tanımsız kalırsa sunucu, repoda AÇIK METİN olarak
+// duran SABİT bir secret ile sessizce ayağa kalkıyordu (CWE-798). Bu durumda
+// bu kaynak koduna erişebilen HERKES geçerli JWT üretebilir (super_admin
+// dahil) — "fiilen güvenlik yok" demek. Fallback kaldırıldı: JWT_SECRET
+// tanımlı değilse süreç HEMEN ve GÜRÜLTÜLÜ şekilde durur, zayıf bir
+// varsayılanla asla devam etmez.
+if (!process.env.JWT_SECRET) {
+  fastify.log.error(
+    "[SEC] JWT_SECRET ortam değişkeni tanımlı değil. Bilinen/sabit bir secret ile " +
+      "ASLA devam edilmez (CWE-798). .env içinde güçlü, rastgele bir JWT_SECRET " +
+      "tanımlayın (örn. `openssl rand -hex 32`) ve süreci yeniden başlatın."
+  );
+  process.exit(1);
+}
 fastify.register(jwt, {
-  secret:
-    process.env.JWT_SECRET || "FleetJWT2024SecureKey_CHANGE_IN_PRODUCTION",
+  secret: process.env.JWT_SECRET,
 });
 fastify.register(require("@fastify/postgres"), { connectionString: DB_URL });
 
