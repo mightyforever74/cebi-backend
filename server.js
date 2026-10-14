@@ -2208,6 +2208,21 @@ fastify.post(
         .code(400)
         .send({ error: "plate_no and esp32_device_id required" });
     }
+
+    // FEAT-020 Phase 1.1 bug fix (2026-10-14 gatekeeping bulgusu): bu
+    // validasyon hic eklenmemisti -- asagidaki INSERT "capacity" degiskenini
+    // kullaniyordu ama hicbir yerde tanimlanmamisti, bu yuzden POST
+    // /api/vehicles HER cagrida ReferenceError ile 500 donuyordu (yeni arac
+    // eklenemiyordu, ne mobil ne dispatcher). PUT /api/vehicles/:id'deki
+    // ayni desen burada da uygulaniyor. CREATE oldugu icin PUT'taki
+    // "body'de yoksa NULL gonder (COALESCE eski degeri korur)" triki
+    // gerekmiyor -- yeni satirda korunacak eski deger yok, parseVehicleCapacityFields'in
+    // varsayilanlari (volumeM3/weightKg null, hazmatClasses []) doğrudan kullanilir.
+    const capacity = parseVehicleCapacityFields(request.body);
+    if (!capacity.ok) {
+      return reply.code(400).send({ error: capacity.error });
+    }
+
     const companyId = request.companyId;
     if (!companyId && !request.isSuperAdmin) {
       return reply.code(400).send({ error: "Company context required" });

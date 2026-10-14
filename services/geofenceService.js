@@ -5,6 +5,7 @@ const {
   findGeofenceMatchIndex,
   applyGeofenceVisit,
 } = require('./waypointGeofenceHelpers');
+const { syncWarehouseReturn } = require('./syncWarehouseReturn');
 
 const CONFIG_VERSION_CACHE = new Map(); // chipId → last published version
 
@@ -419,6 +420,22 @@ async function handleGeofenceEvent(fastify, topic, message) {
       } catch (wpErr) {
         await client.query('ROLLBACK').catch(() => {});
         fastify.log.warn({ wpErr }, '[GF] Waypoint auto-visit failed — skipped');
+      }
+    }
+
+    // ── 9c. FEAT-018 FN-14 syncWarehouseReturn — entry-only ──
+    // "in_transit -> warehouse_received" gecisi (spec §2 durum gecis tablosu).
+    // Ayni disiplin: entry-only (exit bir teslim tamamlanmasi anlamina
+    // gelmez), best-effort (hicbir sekilde FCM/CSRD'yi veya ana geofence
+    // akisini bloklamaz/kirmaz — syncWarehouseReturn zaten kendi icinde
+    // Graceful Degradation ile "bu bir depo degil" / "bu aracta in_transit
+    // RMA yok" durumlarinda sessizce null doner; burada sadece beklenmedik
+    // DB hatalarina karsi try/catch var).
+    if (rawType === 'entry' && vehicle_id) {
+      try {
+        await syncWarehouseReturn(client, company_id, vehicle_id, zone.id);
+      } catch (swrErr) {
+        fastify.log.warn({ swrErr }, '[GF] syncWarehouseReturn failed — skipped');
       }
     }
 
