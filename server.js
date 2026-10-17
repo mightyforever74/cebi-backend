@@ -2559,7 +2559,7 @@ fastify.post(
     const client = await fastify.pg.connect();
     try {
       const { rows } = await client.query(
-        "SELECT serial FROM devices WHERE id = $1",
+        "SELECT serial, esp_chip_id FROM devices WHERE id = $1",
         [id]
       );
 
@@ -2568,15 +2568,47 @@ fastify.post(
       }
 
       const serialNo = rows[0].serial;
-      const topic = `fleet/truck/${serialNo}/command`;
+      const espChipId = rows[0].esp_chip_id;
 
-      mqttClient.publish(topic, command);
-      console.log(`[CMD] Sent ${command} to ${serialNo}`);
-      return {
-        success: true,
-        message: `${command} komutu gönderildi`,
-        device: serialNo,
-      };
+      if (!espChipId) {
+        return reply.code(400).send({ error: "Chip ID bilgisi yok" });
+      }
+
+      // DUZELTME 17 Eki 2026: Eski kod yanlis topic'e (fleet/truck/{serial}/command)
+      // ve firmware'in tanimadigi komut string'lerine yaziyordu — hicbir komut
+      // cihaza ulasmiyordu. Firmware sadece fleet/device/{espChipId}/commands
+      // topic'ini dinliyor ve mesaj govdesinde "RESET_PROVISION" alt-string'ini
+      // ariyor (bkz. fleet_tracker_v5_0_4.ino, MQTT command handler). CLEAR_WIFI
+      // butonunun gercek anlami budur: NVS temizle, BLE moduna don.
+      const firmwareCommand =
+        command === "CLEAR_WIFI" || command === "RESET"
+          ? "RESET_PROVISION"
+          : command;
+
+      const topic = `fleet/device/${espChipId}/commands`;
+      const payload = JSON.stringify({ command: firmwareCommand });
+
+      try {
+        await new Promise((resolve, reject) => {
+          mqttClient.publish(topic, payload, { qos: 1 }, (err) =>
+            err ? reject(err) : resolve()
+          );
+        });
+        console.log(`[CMD] Sent ${command} (${firmwareCommand}) to ${serialNo} (${espChipId})`);
+        return {
+          success: true,
+          mqtt_sent: true,
+          message: `${command} komutu gönderildi`,
+          device: serialNo,
+        };
+      } catch (mqttErr) {
+        console.warn(`[CMD] MQTT publish failed for ${serialNo}:`, mqttErr.message);
+        return reply.send({
+          success: false,
+          mqtt_sent: false,
+          message: "Cihaz offline, BLE ile reprovision yapin",
+        });
+      }
     } finally {
       client.release();
     }
