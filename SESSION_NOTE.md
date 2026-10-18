@@ -42,6 +42,16 @@
 
 **Sonuç:** SMTP tamamlandı ve doğrulandı. Dış servis durumu: HERE ✓, Google Maps ✓, SMTP ✓, OpenWeather (key oluşturuldu, aktivasyon bekleniyor — henüz doğrulanmadı). OSRM/CARTO ve MQTT bilinçli olarak erteleniyor (bkz. `cebi.env.example` yorumları).
 
+## 2026-10-18 (gece, devam 5) — OPENWEATHER_API_KEY doğrulandı; dış servis tedariki tamamlandı
+
+**Bulgu/çözülen hata — `OPENWEATHER_API_KEY` bir şekilde boşaldı:** ~1 saat sonra 401 devam edince kontrol edildi (`grep '^OPENWEATHER_API_KEY=' | sed 's/^OPENWEATHER_API_KEY=//' | awk '{print length}'`) → uzunluk **0** çıktı, satır `OPENWEATHER_API_KEY=` olarak tamamen boşalmıştı (ilk yazımda `grep -c` ile `1`/dolu doğrulanmıştı). Kesin sebebi bu oturumda tespit edilemedi (muhtemelen dosyanın elle düzenlenmesi veya bir yan etki) — **not edilsin:** bundan sonra her secret yazımından hemen sonra sadece varlık değil, **uzunluk da** doğrulanmalı (`awk '{print length}'`), tek başına `grep -c` yeterli değilmiş (satırın "dolu" görünüp sonradan sessizce boşalabildiğini gösterdi). Değer tekrar girildi, uzunluk `32` (OpenWeatherMap key formatıyla tutarlı) doğrulandı.
+
+**Sonuç — fonksiyonel doğrulandı:** İstanbul koordinatı ile gerçek hava durumu verisi döndü (`clear sky, 14.44C`).
+
+**Dış servis tedariki TAMAMLANDI:** `HERE_API_KEY` ✓ · `GOOGLE_MAPS_API_KEY` ✓ · `SMTP_*` ✓ · `OPENWEATHER_API_KEY` ✓ — hepsi canlı, fonksiyonel doğrulanmış. Bilinçli olarak ertelenenler: `OSRM_BASE_URL`/`CARTO_API_KEY` (sıfırdan entegrasyon gerektiriyor, kod yok), MQTT (ADR-CE-02 henüz karara bağlanmadı, v1 varsayılanı HTTPS toplu senkronizasyon).
+
+**Kalan açık maddeler (Faz 4 sonrası):** Weighbridge bounded context (kod/migration yok), ADR-CE-04 "planlanan sefer sayısı" veri kaynağı sorusu, §9.2 tartım cihazı marka/model kararı.
+
 ## 2026-10-18 (gece, devam) — İlk seed veri + gerçek login uçtan uca doğrulandı
 
 **Yapılan:** `companies` tablosuna bir test şirketi (`Cebi Test A.Ş.`, slug `cebi-test`), `users` tablosuna buna bağlı bir `company_admin` kullanıcısı (`admin@cebi-test.local`) eklendi. Şifre hash'i backend container'ının kendi `bcryptjs`'iyle (cost 10) üretildi — login kodunun (`server.js:594`) kullandığı algoritmayla garanti uyumlu olması için. Şifre değeri hiçbir adımda ekrana/sohbete basılmadı (Sır Hijyeni).
