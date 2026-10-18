@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-10-18 (gece, devam 7) — Weighbridge bounded context: şema + adapter iskeleti yazıldı
+
+**Cem'in teyidi:** Tartım cihazı marka/model bilgisi henüz yok (§9.2 hâlâ açık). Bu yüzden iskelet, cihazdan tamamen bağımsız (adapter pattern, §8.4) tasarlandı — sadece `ManualAdapter` çalışır durumda, HTTP/TCP/Serial adapter'lar 501 döner (`TODO(§9.2)`).
+
+**Eklenenler (push edilmedi, henüz bu oturumda):**
+- `migrations/1785200000000_add-weighbridge-operator-role.sql` — `public.users.role` CHECK'ine `weighbridge_operator` (Tartı Memuru, §9.6) eklendi. Desen: `1778950000000_add-dispatcher-role.sql` ile birebir aynı.
+- `migrations/1785300000000_create-weighbridge-readings.sql` — `public.weighbridge_readings` tablosu: append-only (UPDATE/DELETE trigger ile DB seviyesinde engellendi, §9.5 değişmezlik gereksinimi), düzeltmeler `supersedes_id` zinciriyle yeni satır olarak eklenir (reason zorunlu). `task_id → public.tasks(id)` (enterprise.dispatch_tasks değil — köprü zaten `tasks.enterprise_dispatch_task_id` üzerinden var, 1782100000000). `weighbridge_readings_current` view'ı, gate kontrolü için hazır sorgu yüzeyi.
+- `migrations/1785400000000_exception-events-add-trip-reconciliation-type.sql` — `enterprise.exception_events.exception_type` CHECK'ine `trip_count_reconciliation_mismatch` eklendi (ADR-CE-04 §B.2 — bu değer henüz hiçbir kod tarafından INSERT edilmiyor, sadece constraint hazırlandı). Desen: `1782800000000_bug1-overlap-foundation.sql` (rule_violation eklemesi) ile birebir aynı.
+- `services/weighbridge/adapters/{WeighbridgeAdapter,ManualAdapter,HttpAdapter,TcpAdapter,SerialAdapter}.js` — interface + 1 çalışan + 3 iskelet adapter.
+- `services/weighbridge/index.js` — adapter factory.
+- `routes/weighbridge.js` — `POST /api/weighbridge/readings`, `GET /api/weighbridge/tasks/:taskId/readings`, `GET /api/weighbridge/tasks/:taskId/current`, `POST /api/weighbridge/readings/:id/correct`. Roller: `weighbridge_operator, dispatcher, company_admin, super_admin` (driver tartım giremiyor). `server.js`'e register edildi.
+
+**Bilinçli olarak YAPILMADI (ayrı bir adım, bu turda değil):** §9.5/ADR-CE-04 §2-A'nın gerektirdiği "tartım kaydı olmadan sefer Completed olamaz" gate'i, `routes/driver.js`/`server.js`'deki mevcut waypoint/task tamamlama akışına (`updateWaypointStatusTx` ve ilgili endpoint'ler) HENÜZ bağlanmadı. Gerekçe: bu, canlı production akışını değiştiren bir kod değişikliği — `weighbridge_readings_current` view'ı hazır (`SELECT EXISTS(...)` ile tek sorguda kontrol edilebilir), ama tam completion akışının (hangi waypoint "final"/dropoff sayılıyor, tasks.status ne zaman "Completed" oluyor) satır satır incelenip doğru noktaya bağlanması gerekiyor — "ispat et" disiplini gereği aceleye getirilmeyecek.
+
+**Doğrulama durumu:** Sadece syntax-check (`node --check`) yapıldı — DB'ye karşı (`cebi-db`) henüz migration uygulanmadı, endpoint'ler canlıda test edilmedi. Sıradaki adım: Cem'in erişimiyle `fleet-enterprise-01`'de 3 migration'ı uygula, seed task ile `POST /api/weighbridge/readings` + `/current` uçtan uca doğrula.
+
+**Henüz açık:** §9.2 (cihaz marka/model), completion gate wiring, override için rol kısıtı gerekip gerekmediği (ADR-CE-04 §5).
+
+---
+
 ## 2026-10-18 (gece, devam 6) — ADR-CE-04 "Onaylandı"ya geçti
 
 **Cem'in önerisi:** "Planlanan sefer sayısı" için Hibrit model — `dispatch_tasks`'tan otomatik türetim (varsayılan) + dispatcher'ın gerektiğinde elle override edebilmesi.

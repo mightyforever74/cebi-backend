@@ -541,6 +541,7 @@ fastify.register(require("./routes/companyBranding")); // §10 MVP-2: GET/PUT /a
 fastify.register(require("./plugins/etag-cache")); // S6: ETag/304 cache for polling endpoints
 fastify.register(require("./routes/geofences")); // Geofence CRUD + edge events
 fastify.register(require("./routes/reports")); // Operations Report
+fastify.register(require("./routes/weighbridge")); // Weighbridge Operations (Faz 1 §3/§8.4/§9.5, ADR-CE-04)
 
 // ============================================
 // HEALTH & SYSTEM
