@@ -3,7 +3,7 @@
 | Alan | Değer |
 |---|---|
 | **Durum** | Onaylandı |
-| **Versiyon** | 2 |
+| **Versiyon** | 3 |
 | **Tarih** | 2026-10-18 |
 | **Karar veren** | Cem Sahinkaya (Kurucu / Tek Geliştirici) |
 | **Bileşen** | `cebi-backend` (Trip & Dispatch bounded context) |
@@ -32,7 +32,7 @@ Sefer tamamlanma iki seviyeli doğrulama ile çalışacak:
 
 **(B.1) Planlanan sefer sayısının kaynağı — Hibrit model (Cem'in önerisi, 2026-10-18):**
 - **Varsayılan:** o gün için ilgili araç/sürücüye atanmış `dispatch_tasks` (veya karşılığı) kayıtlarının sayısından **otomatik türetilir**. Dispatcher'ın ekstra veri girişi yapması gerekmez.
-- **Override:** dispatcher, istisnai durumlarda (son dakika eklenen/iptal edilen sefer vb.) bu sayıyı elle değiştirebilir. Alan **nullable** tutulur: `NULL` = otomatik türetilen sayı geçerli; dolu değer = override aktif.
+- **Override:** istisnai durumlarda (son dakika eklenen/iptal edilen sefer vb.) bu sayı elle değiştirilebilir. Alan **nullable** tutulur: `NULL` = otomatik türetilen sayı geçerli; dolu değer = override aktif. **Yetki (Cem'in kararı, 2026-10-18):** override yalnızca `company_admin` ve `super_admin` yapabilir — `dispatcher` bu sayıyı değiştiremez. Gerekçe: planlanan sayı aynı zamanda bir kaçak/atlanan sefer sinyali olduğundan (§9.4), operasyonel seviyedeki bir rolün bu kontrolü tek başına esnetebilmesi caydırıcılık amacını zayıflatır.
 - **Override audit (bu ADR turunda eklenen netlik):** override işlemi, tartım kaydının değişmezliği kadar katı olmasa da **loglanır** — kim, ne zaman, hangi gerekçeyle değiştirdi. Gerekçe: planlanan sayı aynı zamanda bir kaçak/atlanan sefer sinyali (§9.4 gerekçesi) olarak kullanılacağından, sessizce ezilebilir olması caydırıcılık amacını zayıflatır.
 
 **(B.2) Uyuşmazlık davranışı (bu ADR turunda eklenen netlik):** tamamlanan < planlanan ise gün **otomatik kapanmaz**; mevcut `enterprise.exception_events` hypertable'ına (ayrı bir mekanizma icat edilmeden, Faz 1 keşfinde zaten doğrulanmış tablo) bir istisna kaydı düşülür. tamamlanan ≥ planlanan ise otomatik onay.
@@ -54,11 +54,10 @@ Sefer tamamlanma iki seviyeli doğrulama ile çalışacak:
 - Override audit'i, caydırıcılık amacının override ile sessizce delinmesini engeller.
 
 ### 4.2 Olumsuz / açık riskler
-- Override alanının kötüye kullanımı audit log'uyla *izlenebilir* hale geliyor ama *engellenmiş* değil — ileride (gerekirse) override için ayrı bir rol/yetki kısıtı eklenebilir, şu an kapsam dışı.
 - `enterprise.exception_events`'e düşen kayıtların kim tarafından/ne zaman gözden geçirileceği (bir "istisna kuyruğu" ekranı var mı) bu ADR'nin kapsamı dışında — UI/iş akışı tarafı ayrıca ele alınmalı.
 
 ## 5. Açık Sorular
-- (Kapandı — bkz. B.1, B.2, B.3.) Kalan tek ayrıntı: override için ayrı bir rol/yetki kısıtı gerekip gerekmediği (ör. sadece `company_admin` override edebilsin mi, yoksa `dispatcher` de mi) — şu an herhangi bir dispatcher'a açık, ihtiyaç olursa daraltılabilir.
+- (Kapandı — bkz. B.1, B.2, B.3 ve override yetki kısıtı.) Bu ADR'nin açık sorusu kalmadı. Geri kalan iş (reconciliation cron'unun kodlanması, "planlanan sayı" alanının `dispatch_tasks`'a eklenmesi) ayrı bir implementasyon adımı — henüz yapılmadı, bu ADR sadece tasarımı onaylıyor.
 
 ## 6. Referanslar
 - Faz 1 raporu: `claude/tulipfleet-customer-edition-faz1-kesif-raporu.md` §4 (Risk #11), §8.7, §9.4, §9.5
@@ -71,3 +70,4 @@ Sefer tamamlanma iki seviyeli doğrulama ile çalışacak:
 |---|---|---|---|
 | 1 | 2026-10-18 | Cem Sahinkaya | İlk karar metni kaydedildi — "Önerildi". Planlanan-sefer-sayısı kaynağı netleşmeden "Onaylandı"ya geçemez. |
 | 2 | 2026-10-18 | Cem Sahinkaya | Planlanan sefer sayısı için Hibrit model (otomatik türetim + audit'li override) onaylandı. Uyuşmazlık davranışı (`enterprise.exception_events`'e düş) ve tetikleme (sefer-tamamlama + gece yarısı cron) netleşti. Durum → "Onaylandı". |
+| 3 | 2026-10-18 | Cem Sahinkaya | Override yetkisi `company_admin`/`super_admin` ile sınırlandırıldı (`dispatcher` değiştiremez). ADR'nin son açık sorusu kapandı. |
