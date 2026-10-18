@@ -17,17 +17,23 @@ Bu dosya, `cebi-backend` reposunun "doğum sertifikası"dır. Fork anındaki dur
 | **Faz 1 raporu** | Proje dokümanı: `claude/tulipfleet-customer-edition-faz1-kesif-raporu.md` (6 repo keşif, risk analizi, 9 soru/cevap) |
 | **ADR'ler** | `/docs/adr/ADR-CE-01…04` (bu repoda, Customer Edition'ın tüm bileşenlerini kapsayan merkezi mimari kararlar) |
 
-## Bağımsızlık durumu (fork anında — henüz uygulanmadı)
+## Bağımsızlık durumu
 
-Kod aynen taşındı; **hiçbir bağımsızlaştırma adımı henüz yapılmadı**. Bu repo şu an:
-- Aynı `JWT_SECRET` değerlerine (kaynak env ile) atıfta bulunuyor — henüz kendi secret'ı yok.
-- `DATABASE_URL` placeholder — Dedicated DB henüz kurulmadı.
-- `.env.example`'daki tüm dış servis anahtarları (HERE_API_KEY, GOOGLE_MAPS_API_KEY, SMTP_*, MQTT_*) kaynak değerlerle **commit edilmemiş** durumda (zaten `.env` hiçbir repoda commit edilmiyordu) — ama bu repo, yeni ve bağımsız kimlik bilgileriyle tedarik edilene kadar üretim ortamına karşı **çalıştırılmamalı**.
+**2026-10-18 (fork anında):** Kod aynen taşındı; hiçbir bağımsızlaştırma adımı henüz yapılmamıştı.
 
-Bağımsızlaştırma (yeni secret, yeni DB, yeni API key seti, OSRM/CARTO entegrasyonu, Weighbridge modülü) Faz 4'ün kapsamıdır.
+**2026-10-18 (Faz 4 — altyapı iskeleti eklendi):** Cem'in altyapı kararı: yeni bir sunucu/VPS kiralanmayacak — mevcut Hetzner sunucularından biri (fleet-prod-01 veya fleet-enterprise-01, kullanım oranı düşük) fiziksel olarak paylaşılacak, ama **tam mantıksal izolasyon** korunacak (ayrı Docker network, ayrı Postgres instance/port, ayrı `cebi.env`). Eklenenler: `docker-compose.cebi.yml` (izole `cebi-net` network, `cebi-db` + `cebi-backend` servisleri), `cebi.env.example` (yeni/bağımsız secret ve API key şablonu — ana projenin değerleriyle ortak hiçbir alan yok), `DEPLOYMENT_RUNBOOK.md` (Cem'in kendi SSH erişimiyle çalıştıracağı adımlar — bu session'ın Hetzner sunucularına ağ erişimi yok, doğrulandı).
+
+**Henüz uygulanmadı (gerçek sunucuda), sadece kod/şablon seviyesinde hazır:**
+- `JWT_SECRET` — henüz üretilmedi (runbook'ta `openssl rand -hex 32` adımı var).
+- `DATABASE_URL` / Dedicated DB — henüz kurulmadı (compose dosyası hazır, sunucuda çalıştırılmadı).
+- Dış servis anahtarları (HERE, OSRM/CARTO, SMTP, Google Maps, OpenWeather) — hiçbiri tedarik edilmedi.
+- **Açık kararlar** (`DEPLOYMENT_RUNBOOK.md` §0'da detaylı): hangi sunucu (öneri: fleet-enterprise-01), domain/subdomain adlandırması, DB motoru (TimescaleDB vs. sade PostgreSQL) onayı.
+
+Bu repo, yukarıdaki adımlar tamamlanana kadar üretim ortamına karşı **çalıştırılmamalı**.
 
 ## Değişiklik günlüğü
 
 | Tarih | Not |
 |---|---|
 | 2026-10-18 | Fork oluşturuldu, baseline sabitlendi. |
+| 2026-10-18 | Faz 4 başlangıcı: izole docker-compose, env şablonu, deployment runbook eklendi (commit `c4b5113`). Gerçek sunucu kurulumu henüz yapılmadı. |

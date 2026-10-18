@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-10-18 (öğleden sonra) — Faz 4 başlangıcı: bağımsızlaştırma iskeleti
+
+**Altyapı kararı (Cem):** Yeni VPS kiralanmayacak — mevcut Hetzner sunucularından biri (kaynak kullanımı ~%3.4) fiziksel olarak paylaşılacak, ama tam mantıksal izolasyon korunacak: ayrı Docker network (`cebi-net`), ayrı Postgres instance/port (5433), ayrı `cebi.env`. Hedef: ileride dump+taşı ile sıfır kod değişikliğiyle bağımsız bir sunucuya geçilebilsin.
+
+**Yapılan (kod/şablon seviyesinde, 3 repoya da push edildi):**
+- `cebi-backend`: `docker-compose.cebi.yml` (izole network+volume+2 servis), `cebi.env.example` (yeni/bağımsız env şablonu — ana projenin hiçbir değeriyle ortak alan yok), `DEPLOYMENT_RUNBOOK.md` (Cem'in SSH ile çalıştıracağı adımlar). `.gitignore`'a `cebi.env` eklendi (gerçek secrets asla commit edilmeyecek).
+- `cebi-mobile`: `src/constants/config.js`'deki ana projeye ait sabit fallback'ler kaldırıldı — `PRODUCTION_API_URL` (`api.tulipfleet.com`), `DEV_API_URL`/`WS_URL` (`46.224.1.192`, ana projenin fleet-prod-01 IP'si — Faz 1 keşfinde fark edilmemiş ek bir ADR-CE-03 ihlaliydi, bu turda bulundu ve düzeltildi, `WS_URL` zaten ölü kodtu ama IP'yi barındırıyordu).
+- `cebi-dispatcher`: `src/config/api.ts`'deki üç-ayrı-backend varsayımı (`AUTH_API_URL`/`ENTERPRISE_API_URL`/`SUPERVISOR_API_URL`, her biri ana projenin domainlerine fallback yapıyordu) tek bir `CEBI_API_URL`'e konsolide edildi (Faz 3'teki "ayrı enterprise servisi yok" kararıyla tutarlı); fallback'ler tamamen kaldırıldı, env eksikse açık hata loglanıyor.
+
+**Bu session'ın sınırı (ispat et):** Hetzner sunucularına (10.0.0.0/16, SSH) ağ erişimi yok — `46.224.1.192:22` bağlantı denemesi bloklandı. Bu yüzden gerçek sunucu kurulumu (docker compose up, secret üretimi) bu session'dan yapılamadı; `DEPLOYMENT_RUNBOOK.md` Cem'in kendi SSH erişimiyle çalıştıracağı tam komut listesini içeriyor.
+
+**Açık kararlar (runbook §0'da):** hangi sunucu (fleet-prod-01 vs fleet-enterprise-01 — önerim: enterprise-01, düşük production riski), domain/subdomain adlandırması (tulipfleet.com alt domaini mi, müşteri-nötr domain mi), DB motoru onayı (TimescaleDB vs. sade PostgreSQL).
+
+---
+
 ## 2026-10-18 — Faz 3: Kontrollü Fork gerçekleştirildi
 
 **Yapılan:**
