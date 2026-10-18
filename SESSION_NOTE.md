@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-10-18 (gece, devam) — İlk seed veri + gerçek login uçtan uca doğrulandı
+
+**Yapılan:** `companies` tablosuna bir test şirketi (`Cebi Test A.Ş.`, slug `cebi-test`), `users` tablosuna buna bağlı bir `company_admin` kullanıcısı (`admin@cebi-test.local`) eklendi. Şifre hash'i backend container'ının kendi `bcryptjs`'iyle (cost 10) üretildi — login kodunun (`server.js:594`) kullandığı algoritmayla garanti uyumlu olması için. Şifre değeri hiçbir adımda ekrana/sohbete basılmadı (Sır Hijyeni).
+
+**Bulgu/çözülen hata — FK kontrolü, oturum rolünü değil kısıtı tanımlayan tablonun sahibini kullanıyor:** `INSERT INTO users (...)` komutu `ERROR: permission denied for schema public` ile başarısız oldu — hata `companies` tablosuna karşı dahili bir FK bütünlük kontrolü sorgusunda (`SELECT 1 FROM ONLY public.companies ... FOR KEY SHARE`) çıktı. `cebi_admin` superuser olduğu halde (`pg_roles.rolsuper = t`, doğrulandı) bu hatayı aldı — sebebi, PostgreSQL'in FK bütünlük kontrol trigger'larını **bağlanan oturumun rolüyle değil, kısıtı tanımlayan (referencing) tablonun sahibinin yetkileriyle** çalıştırması (bilinçli bir Postgres güvenlik davranışı — FK ihlallerinin, erişimi olmayan bir kullanıcıya başka bir tablonun veri varlığını sızdırmasını önlemek için). `companies`/`users` tablolarının sahibi `fleetadmin` (dump'tan gelen placeholder rol) — ve `fleetadmin`'in `public` şeması üzerinde `USAGE` yetkisi yoktu. **Düzeltme:** `GRANT USAGE ON SCHEMA public TO fleetadmin; GRANT USAGE ON SCHEMA enterprise TO fleetadmin;` — sonra INSERT sorunsuz çalıştı.
+
+**Sonuç — tam uçtan uca doğrulandı:** `POST /api/auth/login` gerçek kimlik bilgisiyle denendi → geçerli bir JWT token + şirket bilgisi gömülü kullanıcı objesi döndü (200 OK). Altyapı + şema + backend + gerçek kullanıcı zinciri eksiksiz çalışıyor.
+
+**Sıradaki adım (henüz yapılmadı):** Dış servis anahtarları (HERE, OSRM/CARTO, SMTP, Google Maps, OpenWeather) hâlâ tedarik edilmedi; Weighbridge bounded context henüz tasarlanmadı/kodlanmadı.
+
+---
+
 ## 2026-10-18 (gece) — Faz 4: şema import tamamlandı, `cebi-backend` gerçek şemaya karşı doğrulandı
 
 **Önceki girdinin "sıradaki adım"ı tamamlandı: DB şeması artık tam.** Domain kararı netleşti: `cebi-api.tulipfleet.com` (Caddyfile'a site bloğu eklendi, Cloudflare Origin Certificate, `/etc/caddy/origin/cebi-api.{crt,key}` — enterprise-api deseniyle aynı). `curl -i https://cebi-api.tulipfleet.com/health` önce `502` (backend henüz yoktu, `server: cloudflare` header'ıyla Cloudflare üzerinden geçtiği doğrulandı), backend ayağa kalkınca `127.0.0.1:3100` üzerinden `200` doğrulandı.
