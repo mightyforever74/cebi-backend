@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-10-18 (gece, devam 12) — Sistem sağlığı kontrolü + append-only kuralının ops script'lerini de etkilediği doğrulandı
+
+**`scripts/ops/cebi_health_check.sh` ilk çalıştırma — her şey sağlıklı:** container'lar 0 restart, disk %7, `/health` 200 (local+public), DB 23 MB, tüm migration'lar şemaya yansımış, `mobile_location_pings` doğru şekilde DÜZ tablo (hypertable değil). Log taramasında 2 bulgu — ikisi de yeni sorun DEĞİL: (1) ilk (migration'dan önceki) başarısız telemetri test denemesinden kalan eski log satırları, (2) `[GF] Subscribe failed` — **incelendi, `services/geofenceService.js`'teki ESP32 geofence/konum/telemetri MQTT subscriber'ı** (`fleet/+/+/location` vb. topic'ler) — ADR-CE-02 ile ilgisi yok, canlı/gerekli bir özellik, sadece bu ortama henüz broker kurulmadığı için bağlanamıyor. **Yanlış öneri düzeltildi:** bu reconnect döngüsünü "temizlik" olarak kapatmak önerilmişti, kod incelemesi sonrası bu önerinin hatalı olduğu görülüp geri çekildi — dokunulmadı.
+
+**`scripts/ops/cebi_test_data_cleanup.sh` — append-only kuralı ops script'lerini de etkiliyor (bulgu + düzeltme):** İlk versiyon `CEBI-TEST-001` (weighbridge, kalıcı tartım kaydı var) ve `CEBI-TEST-002` (telemetri, weighbridge'siz) gruplarını TEK `DELETE ... WHERE task_no IN (...)` ifadesinde birleştirmişti. `weighbridge_readings`'in `BEFORE DELETE` tetikleyicisi (Faz 1 §9.5, kasıtlı) DELETE'i reddedince, AYNI statement'taki `CEBI-TEST-002`'nin silinmesi de atomik olarak başarısız oldu (ikisi de FK zincirleriyle etkilendi). **Bu bir bug değil — append-only kuralının tam istendiği gibi çalıştığının kanıtı:** bir tartım kaydı girildikten sonra o seferin/sürücünün/aracın audit izi asla elle silinemiyor, ops/bakım script'leri dahil. **Düzeltme:** script `CEBI-TEST-001`'e artık hiç dokunmuyor (kalıcı olduğu belgelendi), sadece `CEBI-TEST-002`'yi ayrı statement'larla temizliyor. İkinci çalıştırma tam başarılı: `DELETE 0,1,1,1,2` — `driver2`/`admin2` ve bağlı kayıtlar silindi, `CEBI-TEST-001` ve temel `admin@cebi-test.local` seed'i dokunulmadan kaldı.
+
+**Not (henüz kararlaştırılmadı):** `scripts/dev/cebi_e2e_test.sh` bir dahaki sefere tekrar çalıştırılırsa, kendi üstteki temizlik bloğundaki aynı `weighbridge_readings` DELETE satırı da aynı nedenle başarısız olacak ve `task_no='CEBI-TEST-001'` zaten var olduğu için yeniden-seed adımı çakışabilir — Cem'e soruldu, henüz cevap/karar yok.
+
+---
+
 ## 2026-10-18 (gece, devam 10) — ADR-CE-04 override rol kısıtı kapandı + ADR-CE-02 mobil telemetri "Onaylandı"
 
 **Cem'in kararı (iki konuyu birden çözen tek cevap):** "devam edelim" sonrası sunulan seçenekler arasından **ADR-CE-02 mobil telemetri**'yi seçti (gerekçe: dış vendor/console erişimi gerektirmiyor, kod-only, mimari önemde bir "İnceleniyor" maddesini kapatıyor). Aynı cevapta, önceki turdan açık kalan **ADR-CE-04 override yetkisi** sorusunu da netleştirdi: "ADR-CE-04 override yetkisi sadece company_admin'de olsun." → `docs/adr/ADR-CE-04-sefer-kapanis-reconciliation.md` v3'e işlendi: override yalnızca `company_admin`/`super_admin`, `dispatcher` değiştiremez (gerekçe: planlanan sayı aynı zamanda bir kaçak/atlanan sefer sinyali — operasyonel bir rolün bunu tek başına esnetebilmesi caydırıcılığı zayıflatır). ADR-CE-04'ün kalan tüm açık soruları kapandı (§5).
