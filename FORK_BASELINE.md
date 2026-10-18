@@ -40,12 +40,18 @@ Bu dosya, `cebi-backend` reposunun "doğum sertifikası"dır. Fork anındaki dur
 
 **Dış servis anahtarları — TAMAMLANDI:** HERE, Google Maps (Geocoding), SMTP, OpenWeather — dördü de canlı ve fonksiyonel doğrulanmış. Bilinçli olarak ertelenen: OSRM/CARTO (sıfırdan entegrasyon, kod yok), MQTT (ADR-CE-02 henüz karara bağlanmadı).
 
-**Henüz uygulanmadı:**
-- Weighbridge bounded context — kod/migration hâlâ yazılmadı.
-- ADR-CE-04 "planlanan sefer sayısı" veri kaynağı sorusu — açık.
-- §9.2 tartım cihazı marka/model kararı — açık.
+**Weighbridge bounded context — TAMAMLANDI ve canlıda doğrulandı (2026-10-18):**
+- Şema: `public.weighbridge_readings` (append-only, DB trigger ile UPDATE/DELETE engelli, `supersedes_id` zinciriyle düzeltme), `weighbridge_readings_current` view, `weighbridge_operator` rolü, `enterprise.exception_events`'e `trip_count_reconciliation_mismatch` tipi (ADR-CE-04 B.2).
+- Kod: adapter pattern (`ManualAdapter` çalışır, HTTP/TCP/Serial §9.2 bekliyor), `routes/weighbridge.js`.
+- **Completion gate:** `PUT /api/driver/tasks/:id/complete` artık tartım kaydı yoksa `400 "Weighbridge reading required before completion"` ile reddediyor — cihazdan bağımsız (`weighbridge_readings_current` view'ına bakıyor, `adapter_type`'a değil).
+- Uçtan uca doğrulandı (`scripts/dev/cebi_e2e_test.sh`, `fleet-enterprise-01`): tartımsız `/complete` → 400, tartım girişi → 201, tartımlı `/complete` → 200. Detay: `SESSION_NOTE.md`.
 
-Bu repo artık altyapı+şema+dış servis seviyesinde canlı ve fonksiyonel; kalan eksikler (Weighbridge, bazı ADR kararları) üzerinde çalışılıyor. Deployment Cem'le birlikte, adım adım yapılıyor — ayrı bir runbook dokümanı yok (standart: SESSION_NOTE.md + FORK_BASELINE.md + ADR, başka doküman türü eklenmez).
+**Henüz açık:**
+- §9.2 tartım cihazı marka/model kararı — adapter implementasyonunu bekliyor, mimariyi bloklamıyor.
+- ADR-CE-04 "planlanan sefer sayısı" veri kaynağı — **çözüldü** (hibrit model: `dispatch_tasks`'tan otomatik türetim + audit'li override), ADR durumu "Onaylandı".
+- Override için rol kısıtı gerekip gerekmediği (ADR-CE-04 §5, küçük açık uç).
+
+Bu repo artık altyapı+şema+dış servis+Weighbridge bounded context seviyesinde canlı ve fonksiyonel. Deployment Cem'le birlikte, adım adım yapılıyor — ayrı bir runbook dokümanı yok (standart: SESSION_NOTE.md + FORK_BASELINE.md + ADR, başka doküman türü eklenmez).
 
 ## Değişiklik günlüğü
 
@@ -60,3 +66,6 @@ Bu repo artık altyapı+şema+dış servis seviyesinde canlı ve fonksiyonel; ka
 | 2026-10-18 | `GOOGLE_MAPS_API_KEY` tedarik edildi (ayrı key, `tulipfleet-523be` projesi, sadece Geocoding API), billing bağlandı, fonksiyonel doğrulandı. Süreçte sızan bir ara key tespit edilip derhal silindi/değiştirildi. Detay: `SESSION_NOTE.md`. |
 | 2026-10-18 | `OPENWEATHER_API_KEY` oluşturuldu (aktivasyon bekleniyor, henüz doğrulanmadı); `SMTP` tedarik edildi (`info@tulipfleet.com`/Zoho, ayrı app password) ve `transporter.verify()` ile doğrulandı. Detay: `SESSION_NOTE.md`. |
 | 2026-10-18 | `OPENWEATHER_API_KEY` fonksiyonel doğrulandı (bir aradaki boşalma düzeltildi). Dış servis tedariki (HERE, Google Maps, SMTP, OpenWeather) TAMAMLANDI. Detay: `SESSION_NOTE.md`. |
+| 2026-10-18 | ADR-CE-04 "Onaylandı"ya geçti (hibrit planlanan-sefer-sayısı modeli, audit'li override, exception_events'e düşme, çift katmanlı tetikleme). |
+| 2026-10-18 | Weighbridge bounded context yazıldı ve push edildi: şema (append-only + current view), adapter pattern, route'lar, completion gate (`/complete` artık tartımsız seferi reddediyor). |
+| 2026-10-18 | Weighbridge + completion gate `fleet-enterprise-01`'de uçtan uca doğrulandı: migration'lar uygulandı, `scripts/dev/cebi_e2e_test.sh` ile tartımsız/tartımlı `/complete` senaryoları test edildi — ikisi de beklenen sonucu verdi. Detay: `SESSION_NOTE.md`. |

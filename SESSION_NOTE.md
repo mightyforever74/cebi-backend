@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-10-18 (gece, devam 9) — Weighbridge + completion gate uçtan uca doğrulandı (fleet-enterprise-01)
+
+**Migration'lar uygulandı** (`fleet-enterprise-01`, `cebi-db`): `1785200000000` (weighbridge_operator rolü), `1785300000000` (weighbridge_readings + append-only trigger + current view), `1785400000000` (exception_events trip_count_reconciliation_mismatch tipi) — üçü de hatasız, `cebi-backend` `--build` ile yeniden ayağa kaldırıldı, `/health` → `200`.
+
+**Doğrulama scripti (`scripts/dev/cebi_e2e_test.sh`) ilk çalıştırmada bir bug ortaya çıkardı:** `psql -tAc "INSERT ... RETURNING id;"` komut etiketini (`INSERT 0 1`) de stdout'a basıyor — `-t`/`-A` bunu bastırmıyor (sadece SELECT header/footer'ını bastırıyor). Capture edilen id değişkenleri iki satırlı hale gelip (`uuid\nINSERT 0 1`) sonraki FK insert'lerini bozdu. **Düzeltme:** her capture'a `| head -n 1` eklendi (commit `f1e7f08`), script başına idempotent temizlik eklendi (yarım kalan test kayıtlarını silip güvenle tekrar çalıştırılabilir hale getirdi).
+
+**İkinci çalıştırma — tam başarılı, uçtan uca doğrulandı:**
+1. Driver + `weighbridge_operator` test kullanıcısı, araç, `in_progress` task seed edildi.
+2. **TEST 1 — tartımsız `/complete`:** `HTTP 400 {"error":"Weighbridge reading required before completion"}` — tam beklenen.
+3. **Tartım kaydı (`POST /api/weighbridge/readings`, ManualAdapter, 18500 kg):** `HTTP 201`, kayıt `weighbridge_readings`'e düştü.
+4. **TEST 2 — tartımlı `/complete`:** `HTTP 200`, `task.status: "completed"` — gate geçti, normal tamamlama akışı (actual_end, vb.) sorunsuz çalıştı.
+
+**Sonuç:** Weighbridge bounded context (şema + adapter pattern + route'lar + completion gate) artık sadece kod seviyesinde değil, canlı sunucuda fonksiyonel olarak kanıtlanmış durumda. Test verisi (`driver1@cebi-test.local`, `tarti1@cebi-test.local`, plaka `TEST-34-CEBI`, task `CEBI-TEST-001`) `cebi-db`'de duruyor — zararsız (izole test ortamı, henüz ödeyen müşteri yok), gerekirse `scripts/dev/cebi_e2e_test.sh`'in temizlik bloğu elle tekrar çalıştırılarak silinebilir.
+
+**Kalan açık maddeler:** §9.2 (tartım cihazı marka/model — gelince sadece ilgili adapter implemente edilecek, şema/gate değişmeyecek), override için rol kısıtı gerekip gerekmediği (ADR-CE-04 §5).
+
+---
+
 ## 2026-10-18 (gece, devam 7) — Weighbridge bounded context: şema + adapter iskeleti yazıldı
 
 **Cem'in teyidi:** Tartım cihazı marka/model bilgisi henüz yok (§9.2 hâlâ açık). Bu yüzden iskelet, cihazdan tamamen bağımsız (adapter pattern, §8.4) tasarlandı — sadece `ManualAdapter` çalışır durumda, HTTP/TCP/Serial adapter'lar 501 döner (`TODO(§9.2)`).
