@@ -34,9 +34,10 @@ Bu dosya, `cebi-backend` reposunun "doğum sertifikası"dır. Fork anındaki dur
 - Dedicated DB (`cebi-db`) — tam prod şeması import edildi: 39 `public` + 17 `enterprise` tablo, 4 extension (`postgis`, `btree_gist`, `timescaledb`, `plpgsql`), 8 hypertable (doğru zaman kolonlarıyla). Detaylı saga: `SESSION_NOTE.md`.
 - `cebi-backend` — şemaya karşı fonksiyonel doğrulandı (`/health` → `200`, `"database":"connected"`); ilk seed veri (test şirketi + `company_admin` kullanıcısı) eklendi, `POST /api/auth/login` gerçek kimlik bilgisiyle denenip geçerli bir JWT token döndürdü — uçtan uca doğrulandı.
 - `HERE_API_KEY` — HERE Developer Portal'da aynı hesap altında ayrı bir app (**"TulipFleet Cebi"**, ana projenin "TulipFleet" app'inden farklı) + ayrı API key oluşturuldu (ADR-CE-03: ayrı hesap değil, paylaşılmayan secret yeterli — bkz. değişiklik günlüğü). Routing API v8'e doğrudan istek ile fonksiyonel doğrulandı. Detaylı saga (OAuth/API-key karışıklığı + `restart` vs `up -d` gotcha'sı): `SESSION_NOTE.md`.
+- `GOOGLE_MAPS_API_KEY` — `tulipfleet-523be` (ana proje GCP projesi) içinde ayrı, Cebi'ye özel key oluşturuldu, sadece Geocoding API'ye kısıtlı (ADR-CE-03: aynı pattern, paylaşılmayan credential). Billing hesabı bu oturumda projeye bağlandı (önceden bağlı değildi). Geocoding API'ye canlı istekle fonksiyonel doğrulandı. **Not:** bu süreçte oluşturulan ilk key yanlışlıkla sohbete sızdı (gcloud stderr log'u) ve hemen silinip yenisiyle değiştirildi — detay ve ders `SESSION_NOTE.md`'de.
 
 **Henüz uygulanmadı:**
-- Dış servis anahtarları: `GOOGLE_MAPS_API_KEY`, `OPENWEATHER_API_KEY`, SMTP — tedarik edilmedi (OSRM/CARTO ve MQTT bilinçli olarak erteleniyor).
+- Dış servis anahtarları: `OPENWEATHER_API_KEY`, SMTP — tedarik edilmedi (OSRM/CARTO ve MQTT bilinçli olarak erteleniyor).
 - Weighbridge bounded context — kod/migration hâlâ yazılmadı.
 
 Bu repo artık altyapı+şema seviyesinde canlı ve fonksiyonel; dış servis anahtarları ve ilk seed veri eksik olduğundan **tam üretim kullanımına henüz hazır değil**. Deployment Cem'le birlikte, adım adım yapılıyor — ayrı bir runbook dokümanı yok (standart: SESSION_NOTE.md + FORK_BASELINE.md + ADR, başka doküman türü eklenmez).
@@ -51,3 +52,4 @@ Bu repo artık altyapı+şema seviyesinde canlı ve fonksiyonel; dış servis an
 | 2026-10-18 | Canlı deployment tamamlandı: domain (`cebi-api.tulipfleet.com`) + Caddy/TLS + `cebi-db`/`cebi-backend` izole container'ları + tam prod şeması (hypertable'lar dahil) + fonksiyonel doğrulama. İki açık karar (domain, DB motoru) çözüldü. Detay: `SESSION_NOTE.md`. |
 | 2026-10-18 | İlk seed veri (test şirketi + `company_admin` kullanıcısı) eklendi, `/api/auth/login` gerçek JWT token döndürerek uçtan uca doğrulandı. |
 | 2026-10-18 | `HERE_API_KEY` tedarik edildi (ayrı "TulipFleet Cebi" app, ayrı key — aynı HERE hesabı), Routing API v8 ile fonksiyonel doğrulandı. Detay: `SESSION_NOTE.md`. |
+| 2026-10-18 | `GOOGLE_MAPS_API_KEY` tedarik edildi (ayrı key, `tulipfleet-523be` projesi, sadece Geocoding API), billing bağlandı, fonksiyonel doğrulandı. Süreçte sızan bir ara key tespit edilip derhal silindi/değiştirildi. Detay: `SESSION_NOTE.md`. |

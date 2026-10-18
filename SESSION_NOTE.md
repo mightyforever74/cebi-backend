@@ -16,6 +16,20 @@
 
 **Sonuç:** `HERE_API_KEY` tedariki tamamlandı, canlıda fonksiyonel doğrulandı. Sıradaki dış servis: `GOOGLE_MAPS_API_KEY` (cebi-backend'in kendi key'i — mobile app'in Maps key'inden ayrı, sadece geocoding için kullanılıyor, bkz. `cebi.env.example`).
 
+## 2026-10-18 (gece, devam 3) — GOOGLE_MAPS_API_KEY (Geocoding) tedarik edildi, fonksiyonel doğrulandı
+
+**Kod doğrulaması (tahmin edilmedi, grep ile teyit edildi):** `routes/geocode.js` + `server.js:3563`, sadece **Google Geocoding API**'yi (`maps.googleapis.com/maps/api/geocode/json`, server-side) kullanıyor — Maps SDK/JS değil. Bu yüzden key'e **IP restriction** uygun (Application restriction olarak Android/iOS/referrer değil); şimdilik sadece API restriction (`geocoding-backend.googleapis.com`) uygulandı, IP restriction daha sonra eklenebilir.
+
+**Karar:** ADR-CE-03 — ayrı hesap yerine mevcut `tulipfleet-523be` (ana proje Firebase/GCP projesi) içinde **ayrı, Cebi'ye özel bir key** oluşturuldu (HERE'de kurduğumuz pattern'in aynısı).
+
+**Bulgu/çözülen hata — ciddi, kendi hatamız: key değeri bu sohbete sızdı:** `gcloud services api-keys create ... --format="value(name)"` komutu çalıştırılırken, oluşturulan key'in **tam `keyString` değeri** `stdout`'a değil ama gcloud'un LRO (uzun süren işlem) tamamlanma logunun gittiği **stderr**'e basıldı (`"Operation ... complete. Result: {...keyString:...}"`) — komut `$(...)` ile sadece stdout'u yakaladığından, stderr terminale düştü ve ekran çıktısı sohbete yapıştırıldı. **Sonuç: bu ilk key (`d9f3aa7f-0c09-4bdc-aff9-a3c531c0021e`, displayName `cebi-backend-geocoding`) ele geçmiş sayıldı ve hemen silindi** (`gcloud services api-keys delete`), yenisi (`cebi-backend-geocoding-v2`) `2>/dev/null` ile stderr bastırılarak oluşturuldu. **Ders:** `gcloud services api-keys create` çıktısını her zaman `2>/dev/null` ile çalıştır; `--format="value(name)"` tek başına yeterli değil.
+
+**Bulgu/çözülen hata — `--format="value(name)"` ile stderr bastırıldığında yanlış alan yakalanıyor:** stderr bastırıldıktan sonra `$KEY_RESOURCE` beklenen `projects/.../keys/<uuid>` yerine ham LRO id'si (`operations/akmf.p7-...`) olarak geldi — `get-key-string` bu yüzden 404 verdi, `GOOGLE_MAPS_API_KEY` boş yazıldı (`grep -c` → `0`). **Düzeltme:** `gcloud services api-keys list` ile displayName'e göre gerçek key kaynağını bulup `get-key-string`'i doğrudan o kaynakla (yine `2>/dev/null` ile) çalıştırmak.
+
+**Bulgu/çözülen hata — billing bağlı değildi:** İlk fonksiyonel test `REQUEST_DENIED` / `"You must enable Billing on the Google Cloud Project"` ile başarısız oldu. `gcloud billing projects describe tulipfleet-523be` → `billingEnabled: false`. Mevcut, açık bir billing hesabı bulundu (`013EA7-88C2C2-65AF28`, "My Billing Account") ve `gcloud billing projects link` ile projeye bağlandı — sonrasında istek başarılı oldu.
+
+**Sonuç:** `GOOGLE_MAPS_API_KEY` tedariki tamamlandı, Geocoding API'ye canlı istekle doğrulandı (İstanbul koordinatı → gerçek adres döndü). Sıradaki dış servis: `OPENWEATHER_API_KEY` — koddaki kullanım yeri henüz doğrulanmadı, önce grep ile teyit edilecek.
+
 ## 2026-10-18 (gece, devam) — İlk seed veri + gerçek login uçtan uca doğrulandı
 
 **Yapılan:** `companies` tablosuna bir test şirketi (`Cebi Test A.Ş.`, slug `cebi-test`), `users` tablosuna buna bağlı bir `company_admin` kullanıcısı (`admin@cebi-test.local`) eklendi. Şifre hash'i backend container'ının kendi `bcryptjs`'iyle (cost 10) üretildi — login kodunun (`server.js:594`) kullandığı algoritmayla garanti uyumlu olması için. Şifre değeri hiçbir adımda ekrana/sohbete basılmadı (Sır Hijyeni).
