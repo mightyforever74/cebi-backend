@@ -42,6 +42,15 @@
 
 **Sunucudaki fiili durum:** `CREATE TABLE`/indeksler/`COMMENT` zaten hypertable adımından ÖNCE ayrı ayrı commit olmuştu (psql autocommit, script'te açık `BEGIN` yoktu) — yani tablo sunucuda ZATEN doğru (düz) halde duruyor, ekstra bir düzeltme adımı gerekmedi. Cem'e sadece doğrulama scriptini tekrar çalıştırması söylendi.
 
+**Doğrulama — tam başarılı (`scripts/dev/cebi_telemetry_e2e_test.sh`, `fleet-enterprise-01`):**
+1. **TEST 1 — `company_admin` rolüyle batch gönderimi:** `HTTP 403 {"error":"Sadece driver rolü telemetri gönderebilir"}` — tam beklenen.
+2. **TEST 2 — driver, 3 yeni ping:** `HTTP 201 {"submitted":3,"accepted":3,"duplicates":0}`.
+3. **TEST 3 — AYNI 3 ping tekrar gönderildi (retry simülasyonu):** `HTTP 201 {"submitted":3,"accepted":0,"duplicates":3}` — `client_ping_id` UNIQUE + `ON CONFLICT DO NOTHING` idempotency kanıtlandı.
+4. **TEST 4 — geçersiz latitude (999):** `HTTP 400`, doğru validasyon hatası.
+5. **DB doğrulaması:** `mobile_location_pings` tablosunda tam 3 satır (3 ping kabul edildi, 3 tekrar denemesi atlandı — toplam 3, çift kayıt yok).
+
+**Sonuç:** ADR-CE-02 (Mobil Telemetri) artık sadece kod/tasarım seviyesinde değil, canlı sunucuda fonksiyonel olarak kanıtlanmış durumda — Weighbridge turundaki aynı titizlikle. `cebi-backend` tarafı tam olarak TAMAMLANDI. Kalan: `cebi-mobile` tarafının gerçek bir cihazda/derlemede test edilmesi (bu oturumda cihaz/simülatör erişimi yok — kod seviyesinde syntax-check'li, davranışsal olarak henüz doğrulanmadı) ve bilinçli V1 sınırı olan foreground-only takip.
+
 ---
 
 ## 2026-10-18 (gece, devam 9) — Weighbridge + completion gate uçtan uca doğrulandı (fleet-enterprise-01)
