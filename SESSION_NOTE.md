@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-10-19 (devam 13) — Dispatcher entegrasyonu: Faz A (Çekirdek Operasyon) portu başladı
+
+**Önceki tur kapanışı (not edilmemişti):** `FORK_BASELINE.md`'deki 3 güncel-olmayan madde (eski "MQTT kararı verilmedi" satırı, zaten doğrulanmış bir bölümün başlığının hâlâ "doğrulanmadı" demesi, yeni ops scriptlerinin belgelenmemiş olması) commit `2a909bc` ile düzeltildi.
+
+**"dispatcher entegrasyon mantığı ile devam edelim" talebi üzerine bulgu:** `cebi-dispatcher` (web panel) ile `cebi-backend` arasındaki entegrasyon, beklenenin çok ötesinde bir boşluk içeriyordu. `cebi-dispatcher`'ın çağırdığı ~15 endpoint'ten (`src/hooks/*`, `src/config/api.ts` üzerinden) sadece auth/alerts/user-profile/superadmin tarafı `cebi-backend`'de mevcuttu — `/api/dispatcher/*`, `/dispatcher/tasks/optimize*`, `/api/compliance/assess`, `/api/subscription/*`, `/dispatcher/geocode/discover` **hiç yoktu**. Bu mantık sadece forklanmamış referans repo `tulipfleet-enterprise-backend`'de (ayrı bir Fastify süreci, eski multi-tenant mimari) yaşıyordu — `FORK_BASELINE.md`'nin kendi not #16'sının öngördüğü ama henüz başlanmamış iş.
+
+Cem'e soruldu, **"Faz A önce: Çekirdek operasyon"** seçildi (tasks/drivers/vehicles/locations/latest — günlük kullanım ekranları).
+
+**Kapsam kararı (kodlamaya başlamadan önce, kendiliğinden tespit edildi):** `tulipfleet-enterprise-backend/routes/tasks.js` (703 satır) basit bir liste endpoint'i değil — TÜM VRP (Vehicle Routing Problem) optimizasyon zinciri (`POST .../optimize`, `GET .../optimize/poll/:id`, `POST .../optimize/approve`) + eski HTTP "ince köprü" push'u (`axios` → `routes/internalBridge.js`, `INTERNAL_CORE_API_URL`/`INTERNAL_BRIDGE_TOKEN`) içeriyordu. Bu zincir **bu pasa dahil edilmedi** — gerekçe: (a) kaynağın VRP soyutlaması (`lib/routing/factory.js`) cebi-backend'de yok (cebi-backend'in KENDİ `services/routing/factory.js`'i farklı bir şey yapar — VRP değil, tekil rota/trafik), (b) köprü push'unun tek-süreçli mimariye uyarlanması (HTTP self-call mı, yoksa `internalBridge.js`'in kod değişikliği mi — henüz karar verilmedi) kendi başına ayrı bir inceleme+test döngüsü gerektiriyor. Şema tarafı zaten HAZIR (`enterprise.routing_jobs`/`enterprise.dispatch_tasks` — migration `1778687553584_enterprise-schema-init.sql`'de zaten var, `internalBridge.js` zaten canlı/register edilmiş). Takip işi olarak not edildi: **"Faz A-2: VRP Optimizasyon Portu"**.
+
+**Bu pasta yapılan (commit `89af043`):**
+- `server.js`: `fastify.requireRole(...roles)` decorator eklendi (401/403) — `cebi-backend`'de hiç yoktu, sadece `fastify.authenticate` vardı.
+- `routes/dispatcherDrivers.js`, `dispatcherVehicles.js`, `dispatcherTasks.js` (sadece `GET /api/dispatcher/tasks` listesi), `dispatcherLocations.js` (`locations/latest` + `routes/active`) — hepsi `tulipfleet-enterprise-backend`'den BİREBİR port, `requireRole("company_admin","super_admin")` korumalı (dispatcher rolü KASITLI dışarıda — kaynağın TÜM route'larında aynı örüntü, grep ile doğrulandı).
+- `routes/active`'teki HERE rota geometrisi için kaynağın axios+özel-polyline-decoder'ı KOPYALANMADI; cebi-backend'de zaten üretimde olan `services/routing/factory.js` + `HereRoutingProvider.computeRoute()` (native `fetch`, zaten test edilmiş) reuse edildi.
+- **Porttan önce yakalanan gerçek şema farkı:** kaynak `locations.js` `l.timestamp` kullanıyordu; cebi-backend'in GERÇEK `public.locations` tablosunda kolon adı `time` (kanıt: `server.js`'in `saveLocationData()` INSERT'i + `routes/vehicleTrackHelpers.js`'in zaten çalışan sorgusu, aynı repo). Düzeltilerek portlandı — canlıda 500 ile karşılaşmadan önce yakalandı.
+- `scripts/dev/cebi_dispatcher_faza_e2e_test.sh` yazıldı (aynı desen: idempotent temizlik `CEBI-TEST-003` kapsamlı, 6 test — rol gate 403, 5 endpoint için 200 + test verisinin yanıtta göründüğü doğrulaması).
+
+**Doğrulama durumu:** `node --check` + `bash -n` temiz. **Henüz `fleet-enterprise-01`'de çalıştırılmadı** — git pull + rebuild + test script'in Cem'in erişimiyle çalıştırılması sıradaki adım (weighbridge/mobil telemetri turlarındaki aynı iş birliği deseni). Henüz yapılmadı: `cebi-dispatcher`'ın `REACT_APP_CEBI_API_URL` değerinin gerçek değere set edilmesi (backend hazır olunca ayrı adım).
+
+---
+
 ## 2026-10-18 (gece, devam 12) — Sistem sağlığı kontrolü + append-only kuralının ops script'lerini de etkilediği doğrulandı
 
 **`scripts/ops/cebi_health_check.sh` ilk çalıştırma — her şey sağlıklı:** container'lar 0 restart, disk %7, `/health` 200 (local+public), DB 23 MB, tüm migration'lar şemaya yansımış, `mobile_location_pings` doğru şekilde DÜZ tablo (hypertable değil). Log taramasında 2 bulgu — ikisi de yeni sorun DEĞİL: (1) ilk (migration'dan önceki) başarısız telemetri test denemesinden kalan eski log satırları, (2) `[GF] Subscribe failed` — **incelendi, `services/geofenceService.js`'teki ESP32 geofence/konum/telemetri MQTT subscriber'ı** (`fleet/+/+/location` vb. topic'ler) — ADR-CE-02 ile ilgisi yok, canlı/gerekli bir özellik, sadece bu ortama henüz broker kurulmadığı için bağlanamıyor. **Yanlış öneri düzeltildi:** bu reconnect döngüsünü "temizlik" olarak kapatmak önerilmişti, kod incelemesi sonrası bu önerinin hatalı olduğu görülüp geri çekildi — dokunulmadı.
