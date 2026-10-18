@@ -542,6 +542,7 @@ fastify.register(require("./plugins/etag-cache")); // S6: ETag/304 cache for pol
 fastify.register(require("./routes/geofences")); // Geofence CRUD + edge events
 fastify.register(require("./routes/reports")); // Operations Report
 fastify.register(require("./routes/weighbridge")); // Weighbridge Operations (Faz 1 §3/§8.4/§9.5, ADR-CE-04)
+fastify.register(require("./routes/mobileTelemetry")); // Mobil Telemetri batch ingestion (ADR-CE-01/ADR-CE-02)
 
 // ============================================
 // HEALTH & SYSTEM
