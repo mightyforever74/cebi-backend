@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-10-18 (gece, devam 6) — ADR-CE-04 "Onaylandı"ya geçti
+
+**Cem'in önerisi:** "Planlanan sefer sayısı" için Hibrit model — `dispatch_tasks`'tan otomatik türetim (varsayılan) + dispatcher'ın gerektiğinde elle override edebilmesi.
+
+**Cross-check ile eklenen üç netlik (Cem'in önerisini genişletiyor, çelişmiyor):**
+1. **Override audit:** override alanı nullable (`NULL`=otomatik, dolu=override) ama değiştirildiğinde kim/ne zaman/neden loglanır — planlanan sayı aynı zamanda bir kaçak-sinyali olduğundan (§9.4), sessizce ezilebilir olmaması gerekiyor.
+2. **Uyuşmazlık (tamamlanan < planlanan):** gün otomatik kapanmaz, mevcut `enterprise.exception_events` hypertable'ına kayıt düşer (yeni mekanizma icat edilmedi — Faz 1 keşfinde zaten doğrulanmış tablo kullanıldı).
+3. **Tetikleme:** sefer tamamlandığında hafif yeniden-değerlendirme + gece yarısı güvenlik-ağı cron'u (ikisi birden).
+
+Cem onayladı. ADR-CE-04 v2, Durum: Onaylandı. Detay: `docs/adr/ADR-CE-04-sefer-kapanis-reconciliation.md`.
+
+**Kalan açık maddeler (değişmedi):** Weighbridge bounded context kod/migration (en büyük kalan iş), §9.2 tartım cihazı marka/model, `cebi-mobile` Maps/Firebase credential ayrışması.
+
+---
+
 ## 2026-10-18 (gece, devam 2) — HERE_API_KEY tedarik edildi, fonksiyonel doğrulandı
 
 **Karar:** ADR-CE-03 ("Bağımsız Çalışma Zamanı") ilk yorumumuz ana projeden tamamen ayrı bir HERE hesabı (farklı e-posta) gerektiriyor sanılmıştı — Cem'in düzeltmesiyle netleşti: ilke, iki backend arasında **paylaşılan bir secret olmaması**; aynı HERE hesabı içinde **ayrı bir app** (dolayısıyla ayrı API key) bu amacı karşılıyor. Mevcut "TulipFleet" app'inin yanına **"TulipFleet Cebi"** app'i oluşturuldu.

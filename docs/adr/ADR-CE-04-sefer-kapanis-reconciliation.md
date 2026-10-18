@@ -2,8 +2,8 @@
 
 | Alan | Değer |
 |---|---|
-| **Durum** | Önerildi |
-| **Versiyon** | 1 |
+| **Durum** | Onaylandı |
+| **Versiyon** | 2 |
 | **Tarih** | 2026-10-18 |
 | **Karar veren** | Cem Sahinkaya (Kurucu / Tek Geliştirici) |
 | **Bileşen** | `cebi-backend` (Trip & Dispatch bounded context) |
@@ -28,27 +28,37 @@ Sefer tamamlanma iki seviyeli doğrulama ile çalışacak:
 - **(A) Sefer-seviyesi:** her sefer, "Completed" durumuna geçmeden önce kendi zorunlu koşullarını bağımsız sağlamalı:
   - Teslim/boşaltma konumuna varış (geofence).
   - Gerekli kayıtların tam olması — **tartım kaydı dahil ve zorunlu** (§9.5). Tartım kaydı olmadan sefer "Completed" durumuna geçemez.
-- **(B) Gün-seviyesi otomatik reconciliation:** bir araç/sürücü için o gün **planlanmış sefer sayısı** (dispatcher tarafından belirlenen, örnek: 2) ile veritabanında o gün **tamamlanmış sefer sayısı** otomatik olarak karşılaştırılır. Sayılar örtüşürse günün kapanışı **sistem tarafından otomatik onaylanır**.
+- **(B) Gün-seviyesi otomatik reconciliation:** bir araç/sürücü için o gün **planlanmış sefer sayısı** ile veritabanında o gün **tamamlanmış sefer sayısı** otomatik olarak karşılaştırılır. Sayılar örtüşürse (tamamlanan ≥ planlanan) günün kapanışı **sistem tarafından otomatik onaylanır**.
+
+**(B.1) Planlanan sefer sayısının kaynağı — Hibrit model (Cem'in önerisi, 2026-10-18):**
+- **Varsayılan:** o gün için ilgili araç/sürücüye atanmış `dispatch_tasks` (veya karşılığı) kayıtlarının sayısından **otomatik türetilir**. Dispatcher'ın ekstra veri girişi yapması gerekmez.
+- **Override:** dispatcher, istisnai durumlarda (son dakika eklenen/iptal edilen sefer vb.) bu sayıyı elle değiştirebilir. Alan **nullable** tutulur: `NULL` = otomatik türetilen sayı geçerli; dolu değer = override aktif.
+- **Override audit (bu ADR turunda eklenen netlik):** override işlemi, tartım kaydının değişmezliği kadar katı olmasa da **loglanır** — kim, ne zaman, hangi gerekçeyle değiştirdi. Gerekçe: planlanan sayı aynı zamanda bir kaçak/atlanan sefer sinyali (§9.4 gerekçesi) olarak kullanılacağından, sessizce ezilebilir olması caydırıcılık amacını zayıflatır.
+
+**(B.2) Uyuşmazlık davranışı (bu ADR turunda eklenen netlik):** tamamlanan < planlanan ise gün **otomatik kapanmaz**; mevcut `enterprise.exception_events` hypertable'ına (ayrı bir mekanizma icat edilmeden, Faz 1 keşfinde zaten doğrulanmış tablo) bir istisna kaydı düşülür. tamamlanan ≥ planlanan ise otomatik onay.
+
+**(B.3) Tetikleme (bu ADR turunda eklenen netlik):** iki katmanlı — (i) her sefer "Completed" durumuna geçtiğinde hafif bir yeniden-değerlendirme yapılır (erken otomatik kapanış mümkünse hemen gerçekleşir), (ii) gün sonunda (gece yarısı, yerel saat) bir güvenlik-ağı cron'u aynı kontrolü tekrar çalıştırır — mevcut core backend'deki `setInterval`/cron deseniyle tutarlı (Faz 1 §2.1).
 
 ## 3. Gerekçe
 
 - (A) operasyonel bütünlüğü (her seferin gerçekten doğru şekilde tamamlandığını) garanti eder.
 - (B) gün sonunda insan hatasını/unutkanlığı (örn. bir seferin sistemde "unutulmuş" açık kalması) otomatik olarak yakalayan bir çapraz kontroldür — tartım zorunluluğunun caydırıcılık amacını (§9.5) güçlendirir: planlanan ile tamamlanan uyuşmuyorsa, bu bir kaçak/atlanan sefer sinyali olabilir.
+- (B.1) otomatik türetim insan hatasını sıfırlar, override esnekliği operasyonel gerçekliği (son dakika değişiklikleri) karşılar; audit, override'ın caydırıcılığı atlatmak için kötüye kullanılmasını önler.
+- (B.2) yeni bir istisna/uyarı mekanizması icat etmek yerine mevcut `enterprise.exception_events` altyapısının kullanılması, Modular Monolith kararıyla (§8.6) ve "mevcut desenlerle tutarlılık" ilkesiyle (bkz. HERE/SMTP tedarikinde izlenen pattern, FORK_BASELINE.md) örtüşür.
 
 ## 4. Sonuçlar
 
 ### 4.1 Olumlu
 - Otomatik, insan müdahalesi gerektirmeyen gün sonu kapanışı — operasyonel yük yok.
-- Planlanan ≠ tamamlanan durumu, kendiliğinden bir anomali sinyali haline gelir (ileride bir uyarı/istisna mekanizmasına bağlanabilir).
+- Planlanan ≠ tamamlanan durumu, mevcut exception-event altyapısı üzerinden kendiliğinden bir anomali sinyaline dönüşür.
+- Override audit'i, caydırıcılık amacının override ile sessizce delinmesini engeller.
 
 ### 4.2 Olumsuz / açık riskler
-- **"Planlanan sefer sayısı" verisinin kaynağı henüz tanımlı değil** — dispatcher'ın elle girdiği bir alan mı, yoksa o gün için oluşturulmuş sefer/görev atama kayıtlarının sayısından otomatik türetilen bir değer mi? Bu netleşmeden B kuralı güvenilir çalışmaz.
-- Sayılar örtüşmezse (örn. planlanan 2, tamamlanan 1) ne olacağı tanımlı değil — gün "açık" kalır mı, bir uyarı mı tetiklenir, yetkili bilgilendirilir mi? Henüz tasarlanmadı.
+- Override alanının kötüye kullanımı audit log'uyla *izlenebilir* hale geliyor ama *engellenmiş* değil — ileride (gerekirse) override için ayrı bir rol/yetki kısıtı eklenebilir, şu an kapsam dışı.
+- `enterprise.exception_events`'e düşen kayıtların kim tarafından/ne zaman gözden geçirileceği (bir "istisna kuyruğu" ekranı var mı) bu ADR'nin kapsamı dışında — UI/iş akışı tarafı ayrıca ele alınmalı.
 
 ## 5. Açık Sorular
-- Planlanan sefer sayısının veri kaynağı (manuel alan vs. atama tablosundan türetim).
-- Uyuşmazlık (planlanan ≠ tamamlanan) durumunda sistem davranışı.
-- Bu reconciliation'ın hangi saatte/nasıl tetikleneceği (gece yarısı cron mu, her sefer tamamlandığında yeniden değerlendirme mi).
+- (Kapandı — bkz. B.1, B.2, B.3.) Kalan tek ayrıntı: override için ayrı bir rol/yetki kısıtı gerekip gerekmediği (ör. sadece `company_admin` override edebilsin mi, yoksa `dispatcher` de mi) — şu an herhangi bir dispatcher'a açık, ihtiyaç olursa daraltılabilir.
 
 ## 6. Referanslar
 - Faz 1 raporu: `claude/tulipfleet-customer-edition-faz1-kesif-raporu.md` §4 (Risk #11), §8.7, §9.4, §9.5
@@ -60,3 +70,4 @@ Sefer tamamlanma iki seviyeli doğrulama ile çalışacak:
 | Versiyon | Tarih | Yazan | Değişiklik |
 |---|---|---|---|
 | 1 | 2026-10-18 | Cem Sahinkaya | İlk karar metni kaydedildi — "Önerildi". Planlanan-sefer-sayısı kaynağı netleşmeden "Onaylandı"ya geçemez. |
+| 2 | 2026-10-18 | Cem Sahinkaya | Planlanan sefer sayısı için Hibrit model (otomatik türetim + audit'li override) onaylandı. Uyuşmazlık davranışı (`enterprise.exception_events`'e düş) ve tetikleme (sefer-tamamlama + gece yarısı cron) netleşti. Durum → "Onaylandı". |
