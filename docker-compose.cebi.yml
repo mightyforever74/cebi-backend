@@ -5,13 +5,9 @@
 # edilmez. Aralarında ortak network, ortak volume veya ortak env YOKTUR.
 # Aynı fiziksel sunucuda (Hetzner) barındırılsa da mantıksal olarak tam
 # izoledir (Cem'in 18.10.2026 altyapı kararı — bkz. FORK_BASELINE.md).
+# Sunucu: fleet-enterprise-01.
 #
-# Kurulum adımları: DEPLOYMENT_RUNBOOK.md (bu repo).
-#
-# NOT: Bu dosya burada (sandbox) yazıldı ama hiçbir komutu buradan
-# çalıştırılmadı — bu session'ın ana projenin Hetzner sunucularına (SSH)
-# ağ erişimi yok. Uygulama adımları Cem'in kendi SSH erişimiyle, runbook'u
-# takip ederek yapılmalı.
+# Deployment Cem'le birlikte adım adım yapılıyor (bkz. FORK_BASELINE.md).
 
 networks:
   cebi-net:

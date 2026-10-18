@@ -21,19 +21,25 @@ Bu dosya, `cebi-backend` reposunun "doğum sertifikası"dır. Fork anındaki dur
 
 **2026-10-18 (fork anında):** Kod aynen taşındı; hiçbir bağımsızlaştırma adımı henüz yapılmamıştı.
 
-**2026-10-18 (Faz 4 — altyapı iskeleti eklendi):** Cem'in altyapı kararı: yeni bir sunucu/VPS kiralanmayacak — mevcut Hetzner sunucularından biri (fleet-prod-01 veya fleet-enterprise-01, kullanım oranı düşük) fiziksel olarak paylaşılacak, ama **tam mantıksal izolasyon** korunacak (ayrı Docker network, ayrı Postgres instance/port, ayrı `cebi.env`). Eklenenler: `docker-compose.cebi.yml` (izole `cebi-net` network, `cebi-db` + `cebi-backend` servisleri), `cebi.env.example` (yeni/bağımsız secret ve API key şablonu — ana projenin değerleriyle ortak hiçbir alan yok), `DEPLOYMENT_RUNBOOK.md` (Cem'in kendi SSH erişimiyle çalıştıracağı adımlar — bu session'ın Hetzner sunucularına ağ erişimi yok, doğrulandı).
+**2026-10-18 (Faz 4 — altyapı iskeleti):** Cem'in altyapı kararı: yeni bir sunucu/VPS kiralanmayacak — mevcut Hetzner sunucularından biri fiziksel olarak paylaşılacak, ama **tam mantıksal izolasyon** korunacak (ayrı Docker network, ayrı Postgres instance/port, ayrı `cebi.env`). Eklenenler: `docker-compose.cebi.yml` (izole `cebi-net` network, `cebi-db` + `cebi-backend` servisleri), `cebi.env.example` (yeni/bağımsız secret ve API key şablonu — ana projenin değerleriyle ortak hiçbir alan yok).
+
+**Sunucu seçimi — KARARLAŞTIRILDI: `fleet-enterprise-01`.**
 
 **Henüz uygulanmadı (gerçek sunucuda), sadece kod/şablon seviyesinde hazır:**
-- `JWT_SECRET` — henüz üretilmedi (runbook'ta `openssl rand -hex 32` adımı var).
+- `JWT_SECRET` — henüz üretilmedi (`openssl rand -hex 32`).
 - `DATABASE_URL` / Dedicated DB — henüz kurulmadı (compose dosyası hazır, sunucuda çalıştırılmadı).
 - Dış servis anahtarları (HERE, OSRM/CARTO, SMTP, Google Maps, OpenWeather) — hiçbiri tedarik edilmedi.
-- **Açık kararlar** (`DEPLOYMENT_RUNBOOK.md` §0'da detaylı): hangi sunucu (öneri: fleet-enterprise-01), domain/subdomain adlandırması, DB motoru (TimescaleDB vs. sade PostgreSQL) onayı.
 
-Bu repo, yukarıdaki adımlar tamamlanana kadar üretim ortamına karşı **çalıştırılmamalı**.
+**Açık kararlar:**
+- Domain/subdomain adlandırması — Cebi kendi markası değil; `cebi-api.tulipfleet.com` mı, müşteri-nötr bir domain mi?
+- DB motoru — `docker-compose.cebi.yml` varsayılan olarak TimescaleDB seçti (ana projeyle tutarlılık); sade PostgreSQL yeterliyse değiştirilebilir.
+
+Bu repo, yukarıdaki adımlar tamamlanana kadar üretim ortamına karşı **çalıştırılmamalı**. Deployment Cem'le birlikte, adım adım yapılacak — ayrı bir runbook dokümanı yok (standart: SESSION_NOTE.md + FORK_BASELINE.md + ADR, başka doküman türü eklenmez).
 
 ## Değişiklik günlüğü
 
 | Tarih | Not |
 |---|---|
 | 2026-10-18 | Fork oluşturuldu, baseline sabitlendi. |
-| 2026-10-18 | Faz 4 başlangıcı: izole docker-compose, env şablonu, deployment runbook eklendi (commit `c4b5113`). Gerçek sunucu kurulumu henüz yapılmadı. |
+| 2026-10-18 | Faz 4 başlangıcı: izole docker-compose + env şablonu eklendi (commit `c4b5113`). |
+| 2026-10-18 | Sunucu seçimi kararlaştırıldı: `fleet-enterprise-01`. Ayrı bir DEPLOYMENT_RUNBOOK.md dokümanı yazılmıştı — Cem'in talebiyle silindi (doküman standardımız SESSION_NOTE/FORK_BASELINE/ADR dışına çıkmıyor); deployment birlikte adım adım yapılacak. |
