@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-10-18 (gece, devam 2) — HERE_API_KEY tedarik edildi, fonksiyonel doğrulandı
+
+**Karar:** ADR-CE-03 ("Bağımsız Çalışma Zamanı") ilk yorumumuz ana projeden tamamen ayrı bir HERE hesabı (farklı e-posta) gerektiriyor sanılmıştı — Cem'in düzeltmesiyle netleşti: ilke, iki backend arasında **paylaşılan bir secret olmaması**; aynı HERE hesabı içinde **ayrı bir app** (dolayısıyla ayrı API key) bu amacı karşılıyor. Mevcut "TulipFleet" app'inin yanına **"TulipFleet Cebi"** app'i oluşturuldu.
+
+**Bulgu/çözülen hata 1 — yanlış credential tipi:** İlk oluşturulan "access token" aslında bir **OAuth 2.0/2.1 credential**'dı, HERE'in "API Keys" sekmesinde (query-param `?apiKey=...` ile çalışan düz REST key) **sıfır kayıt** vardı ("API Keys (0 of 2)"). `HereRoutingProvider.js` kodu apiKey query-param bekliyor — OAuth token bu akışla uyumsuz, `"Token or apiKey is missing"` hatasına yol açtı. **Düzeltme:** "API Keys" sekmesinden "Create API key" ile doğru tipte credential üretildi.
+
+**Bulgu/çözülen hata 2 — `docker compose restart`, değişen `env_file`'ı yeniden okumuyor:** `cebi.env`'e yeni key `sed` ile yazıldıktan sonra `docker compose restart cebi-backend` çalıştırıldı, `/health` 200 döndü ama container içinde `process.env.HERE_API_KEY` boştu (`"apiKey invalid. apiKey not found"` / önce `"missing"`). `restart`, var olan container'ı **eski, oluşturulduğu andaki environment'ıyla** yeniden başlatıyor — `env_file` değişikliğini içeri almıyor. **Düzeltme:** `docker compose --env-file cebi.env -f docker-compose.cebi.yml up -d cebi-backend` (container'ı yeniden oluşturur, güncel `cebi.env`'i okur). Bundan sonra `up -d` hep `restart` yerine kullanılacak (env değişikliği olan her durumda).
+
+**Doğrulama yöntemi:** `/api/driver/route-traffic` gibi backend endpoint'leri seed veri (sürücü + aktif görev) gerektirdiğinden, HERE Routing API v8'e `cebi-backend` container'ı içinden doğrudan bir Node script ile (`docker cp` + `docker exec ... node /tmp/here_test.js`) İstanbul içi bir rota istendi — `routes[0].sections[0].summary.duration` döndü, çalıştığı kanıtlandı. Not: `docker exec`'e doğrudan multi-line `node -e "..."` yapıştırmak SSH terminalinde tırnak/satır bölünmesine yol açabiliyor — script'i dosyaya yazıp `docker cp` ile taşımak daha güvenilir.
+
+**Sonuç:** `HERE_API_KEY` tedariki tamamlandı, canlıda fonksiyonel doğrulandı. Sıradaki dış servis: `GOOGLE_MAPS_API_KEY` (cebi-backend'in kendi key'i — mobile app'in Maps key'inden ayrı, sadece geocoding için kullanılıyor, bkz. `cebi.env.example`).
+
 ## 2026-10-18 (gece, devam) — İlk seed veri + gerçek login uçtan uca doğrulandı
 
 **Yapılan:** `companies` tablosuna bir test şirketi (`Cebi Test A.Ş.`, slug `cebi-test`), `users` tablosuna buna bağlı bir `company_admin` kullanıcısı (`admin@cebi-test.local`) eklendi. Şifre hash'i backend container'ının kendi `bcryptjs`'iyle (cost 10) üretildi — login kodunun (`server.js:594`) kullandığı algoritmayla garanti uyumlu olması için. Şifre değeri hiçbir adımda ekrana/sohbete basılmadı (Sır Hijyeni).
