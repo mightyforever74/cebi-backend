@@ -32,11 +32,11 @@ Bu dosya, `cebi-backend` reposunun "doğum sertifikası"dır. Fork anındaki dur
 **Uygulandı (gerçek sunucuda, `fleet-enterprise-01`):**
 - `JWT_SECRET`, `CEBI_DB_PASSWORD` — `openssl rand -hex` ile üretildi, sadece varlığı doğrulandı, değerler hiç ekrana basılmadı.
 - Dedicated DB (`cebi-db`) — tam prod şeması import edildi: 39 `public` + 17 `enterprise` tablo, 4 extension (`postgis`, `btree_gist`, `timescaledb`, `plpgsql`), 8 hypertable (doğru zaman kolonlarıyla). Detaylı saga: `SESSION_NOTE.md`.
-- `cebi-backend` — şemaya karşı fonksiyonel doğrulandı (`/health` → `200`, `"database":"connected"`; `/api/auth/login` → DB'ye karşı hatasız sorgu, `401 Invalid credentials` — tablo/kolon hatası yok).
+- `cebi-backend` — şemaya karşı fonksiyonel doğrulandı (`/health` → `200`, `"database":"connected"`); ilk seed veri (test şirketi + `company_admin` kullanıcısı) eklendi, `POST /api/auth/login` gerçek kimlik bilgisiyle denenip geçerli bir JWT token döndürdü — uçtan uca doğrulandı.
 
 **Henüz uygulanmadı:**
 - Dış servis anahtarları (HERE, OSRM/CARTO, SMTP, Google Maps, OpenWeather) — hiçbiri tedarik edilmedi.
-- DB tamamen boş — henüz company/admin kullanıcı seed edilmedi.
+- Weighbridge bounded context — kod/migration hâlâ yazılmadı.
 
 Bu repo artık altyapı+şema seviyesinde canlı ve fonksiyonel; dış servis anahtarları ve ilk seed veri eksik olduğundan **tam üretim kullanımına henüz hazır değil**. Deployment Cem'le birlikte, adım adım yapılıyor — ayrı bir runbook dokümanı yok (standart: SESSION_NOTE.md + FORK_BASELINE.md + ADR, başka doküman türü eklenmez).
 
@@ -48,3 +48,4 @@ Bu repo artık altyapı+şema seviyesinde canlı ve fonksiyonel; dış servis an
 | 2026-10-18 | Faz 4 başlangıcı: izole docker-compose + env şablonu eklendi (commit `c4b5113`). |
 | 2026-10-18 | Sunucu seçimi kararlaştırıldı: `fleet-enterprise-01`. Ayrı bir DEPLOYMENT_RUNBOOK.md dokümanı yazılmıştı — Cem'in talebiyle silindi (doküman standardımız SESSION_NOTE/FORK_BASELINE/ADR dışına çıkmıyor); deployment birlikte adım adım yapılacak. |
 | 2026-10-18 | Canlı deployment tamamlandı: domain (`cebi-api.tulipfleet.com`) + Caddy/TLS + `cebi-db`/`cebi-backend` izole container'ları + tam prod şeması (hypertable'lar dahil) + fonksiyonel doğrulama. İki açık karar (domain, DB motoru) çözüldü. Detay: `SESSION_NOTE.md`. |
+| 2026-10-18 | İlk seed veri (test şirketi + `company_admin` kullanıcısı) eklendi, `/api/auth/login` gerçek JWT token döndürerek uçtan uca doğrulandı. |
