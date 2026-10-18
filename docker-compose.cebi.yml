@@ -5,7 +5,10 @@
 # edilmez. Aralarında ortak network, ortak volume veya ortak env YOKTUR.
 # Aynı fiziksel sunucuda (Hetzner) barındırılsa da mantıksal olarak tam
 # izoledir (Cem'in 18.10.2026 altyapı kararı — bkz. FORK_BASELINE.md).
-# Sunucu: fleet-enterprise-01.
+# Sunucu: fleet-enterprise-01. Bu sunucuda hiç Postgres yok (tek instance
+# fleet-prod-01'de, 10.0.0.2:5433) — 5433 host portu burada boş, çakışma yok.
+# Port binding deseni, bu sunucudaki enterprise-backend ile tutarlı: sadece
+# 127.0.0.1'e bind edilir, dışarıya hiç açılmaz; dış erişim Caddy üzerinden.
 #
 # Deployment Cem'le birlikte adım adım yapılıyor (bkz. FORK_BASELINE.md).
 
@@ -22,7 +25,7 @@ services:
   cebi-db:
     # Ana proje TimescaleDB kullanıyor (Faz 1 envanteri) — tutarlılık için
     # aynı motor seçildi. Sade PostgreSQL yeterliyse postgres:16-alpine'a
-    # düşürülebilir; bu bir açık karar, DEPLOYMENT_RUNBOOK.md'de not edildi.
+    # düşürülebilir; bu açık bir karar (bkz. FORK_BASELINE.md).
     image: timescale/timescaledb:2.17.0-pg16
     container_name: cebi-db
     restart: unless-stopped
@@ -35,13 +38,10 @@ services:
     volumes:
       - cebi_pgdata:/var/lib/postgresql/data
     ports:
-      # Sadece host'tan elle erişim için (psql, backup). cebi-backend
-      # buraya 'cebi-db:5432' üzerinden container network'ü içinden
-      # bağlanır, bu host port mapping'ine bağlı değildir.
-      # 5433 seçildi: ana projenin fleet-postgres'i muhtemelen 5432/farklı
-      # bir host portunda — deploy ÖNCESİ `docker ps` ve `ss -tlnp` ile
-      # çakışma kontrolü runbook'ta zorunlu adım.
-      - "5433:5432"
+      # Sadece host'tan elle erişim için (psql, backup) — loopback'e bind,
+      # dışarıya hiç açılmaz. cebi-backend buraya 'cebi-db:5432' üzerinden
+      # container network'ü içinden bağlanır, bu mapping'e bağlı değildir.
+      - "127.0.0.1:5433:5432"
 
   cebi-backend:
     build: .
@@ -59,6 +59,7 @@ services:
       # 'cebi-db' servis adıyla bağlanır.
       DATABASE_URL: postgres://${CEBI_DB_USER:-cebi_admin}:${CEBI_DB_PASSWORD}@cebi-db:5432/${CEBI_DB_NAME:-cebi_db}
     ports:
-      # Host'tan erişim portu — varsayılan 3100, ana projenin kullandığı
-      # portlarla çakışmadığı deploy öncesi doğrulanmalı (runbook).
-      - "${CEBI_BACKEND_PORT:-3100}:3000"
+      # Loopback'e bind, dışarıya hiç açılmaz — enterprise-backend'in
+      # "127.0.0.1:3001:3001" deseniyle tutarlı. Dış erişim Caddy üzerinden
+      # (reverse proxy config'i domain kararı verilince eklenecek).
+      - "127.0.0.1:${CEBI_BACKEND_PORT:-3100}:3000"
