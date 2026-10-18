@@ -32,6 +32,18 @@
 
 ---
 
+## 2026-10-18 (gece, devam 11) — Mobil Telemetri migration bug'ı: hypertable + ON CONFLICT idempotency çatışması
+
+**Deployment'ta bulunan hata (`fleet-enterprise-01`):** `1785500000000` migration'ı `CREATE TABLE`/`CREATE INDEX`/`COMMENT` adımlarında başarılı oldu, ama `SELECT create_hypertable(...)` adımında patladı: `ERROR: cannot create a unique index without the column "recorded_at" (used in partitioning)`.
+
+**Kök neden:** TimescaleDB, bir hypertable üzerindeki HER UNIQUE/PRIMARY KEY constraint'in partitioning (zaman) kolonunu içermesini zorunlu kılıyor. Bizim idempotency tasarımımız (`client_ping_id UNIQUE` + `ON CONFLICT (client_ping_id) DO NOTHING`) ise `client_ping_id` ÜZERİNDE TEK BAŞINA bir unique constraint gerektiriyor — Postgres'in `ON CONFLICT` hedef eşlemesi, unique index'in kolon kümesiyle TAM eşleşme istiyor (`(client_ping_id, recorded_at)` composite unique, `ON CONFLICT (client_ping_id)` ile eşleşmezdi). İki gereksinim doğrudan çatışıyor.
+
+**Düzeltme (commit sonraki push'ta):** `migrations/1785500000000_create-mobile-location-pings.sql`'den `create_hypertable`/`add_retention_policy` çağrıları kaldırıldı — tablo bilinçli olarak DÜZ bir Postgres tablosu bırakıldı. Gerekçe belgelendi (migration içinde yorum olarak): idempotency, hypertable'ın zaman-partitioning performans avantajından daha öncelikli; V1 kapsamı (foreground-only, sefer-başına sınırlı GPS toplama) zaten `public.locations`'ın (7/24 çok-araçlı ESP32) ölçeğiyle kıyaslanamaz — hypertable'ın getirisi bu hacimde önemsiz. Retention ihtiyacı gerçek bir sorun haline gelirse ayrı bir cron ile ele alınabilir (ayrı iş kalemi).
+
+**Sunucudaki fiili durum:** `CREATE TABLE`/indeksler/`COMMENT` zaten hypertable adımından ÖNCE ayrı ayrı commit olmuştu (psql autocommit, script'te açık `BEGIN` yoktu) — yani tablo sunucuda ZATEN doğru (düz) halde duruyor, ekstra bir düzeltme adımı gerekmedi. Cem'e sadece doğrulama scriptini tekrar çalıştırması söylendi.
+
+---
+
 ## 2026-10-18 (gece, devam 9) — Weighbridge + completion gate uçtan uca doğrulandı (fleet-enterprise-01)
 
 **Migration'lar uygulandı** (`fleet-enterprise-01`, `cebi-db`): `1785200000000` (weighbridge_operator rolü), `1785300000000` (weighbridge_readings + append-only trigger + current view), `1785400000000` (exception_events trip_count_reconciliation_mismatch tipi) — üçü de hatasız, `cebi-backend` `--build` ile yeniden ayağa kaldırıldı, `/health` → `200`.

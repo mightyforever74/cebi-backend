@@ -44,21 +44,31 @@ CREATE INDEX IF NOT EXISTS idx_mobile_location_pings_driver
 COMMENT ON TABLE public.mobile_location_pings IS
   'ADR-CE-01/ADR-CE-02 — sefer-döngüsü bazlı mobil GPS, HTTPS toplu senkronizasyon. client_ping_id UNIQUE ile idempotent (yinelenen senkronizasyon denemeleri güvenli).';
 
--- Hypertable: public.locations (ESP32) ile aynı desende, yüksek hacimli
--- zaman-serisi veri. 30 günlük retention — ESP32 telemetrisinden (90 gün,
--- exception_events) daha kısa, çünkü bu veri öncelikle anlık rota/takip
--- amaçlı; sefer tamamlandıktan sonra actual_distance_km gibi türetilmiş
--- alanlar tasks tablosunda zaten kalıcı olarak duruyor.
-SELECT create_hypertable('public.mobile_location_pings', 'recorded_at',
-                         chunk_time_interval => INTERVAL '7 days',
-                         if_not_exists => TRUE);
-
-SELECT add_retention_policy('public.mobile_location_pings', INTERVAL '30 days',
-                            if_not_exists => TRUE);
+-- BİLİNÇLİ OLARAK HYPERTABLE YAPILMADI (ilk denemede canlıda bulunan hata,
+-- bu turda düzeltildi):
+--
+-- TimescaleDB, bir hypertable üzerindeki HER UNIQUE/PRIMARY KEY constraint'in
+-- partitioning (zaman) kolonunu içermesini zorunlu kılıyor
+-- ("cannot create a unique index without the column 'recorded_at' (used in
+-- partitioning)"). Bizim idempotency tasarımımız ise `ON CONFLICT
+-- (client_ping_id) DO NOTHING` için `client_ping_id` ÜZERİNDE TEK BAŞINA
+-- bir UNIQUE constraint gerektiriyor (Postgres'in ON CONFLICT hedef
+-- eşlemesi, unique index'in kolon kümesiyle TAM eşleşme ister — ör.
+-- `(client_ping_id, recorded_at)` composite unique, `ON CONFLICT
+-- (client_ping_id)` ile eşleşmez). Bu iki gereksinim birbiriyle çatışıyor.
+--
+-- Karar: idempotency (iş kuralı, dedup garantisi) hypertable'ın
+-- performans avantajından (büyük ölçekte zaman-bazlı partitioning) daha
+-- öncelikli. V1 kapsamı (foreground-only, sefer-başına sınırlı süre GPS
+-- toplama) zaten `public.locations` (7/24 çok-araçlı ESP32 telemetrisi)
+-- ile kıyaslanamayacak kadar düşük hacimli — hypertable'ın getirisi bu
+-- ölçekte önemsiz. Retention (eski kayıtların silinmesi) hacim gerçek
+-- bir sorun haline gelirse ayrı bir cron/scheduled job ile ele alınabilir
+-- — bu migration'ın kapsamı dışında bırakıldı.
 
 DO $$
 BEGIN
-  RAISE NOTICE 'mobile_location_pings migration tamamlandi: tablo + hypertable + retention hazir';
+  RAISE NOTICE 'mobile_location_pings migration tamamlandi: tablo + indexler hazir (duz tablo, hypertable degil)';
 END $$;
 
 -- Down migration (elle calistirilmali):
