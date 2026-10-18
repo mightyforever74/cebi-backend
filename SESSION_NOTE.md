@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-10-18 (akşam) — Faz 4: fleet-enterprise-01'de ilk canlı deployment
+
+**Cem'in geri bildirimi (doküman standardı düzeltmesi):** Önceden ayrı yazılmış `DEPLOYMENT_RUNBOOK.md` Cem tarafından reddedildi ("bu doküman nerden çıktı, istemiyorum") — standart sadece SESSION_NOTE.md + FORK_BASELINE.md + ADR. Dosya silindi (commit `1f8674f`), sunucu kararı (`fleet-enterprise-01`) doğrudan `FORK_BASELINE.md`'ye işlendi. Deployment bu oturumda Cem'le birlikte, SSH üzerinden adım adım konuşarak yapıldı — önceden yazılmış bir komut listesi üzerinden değil.
+
+**Önce kod/doküman keşfi (Cem'in uyarısıyla düzeltildi):** SSH ile sunucuyu keşfetmeye başlamadan önce, zaten elimizde olan `tulipfleet-qa`/`tulipfleet-dispatcher` doküman envanterini (`INFRASTRUCTURE.md`, `ENTERPRISE_INFRASTRUCTURE.md`, `INTEGRATION_BOUNDARIES.md`, `DEVICE_LIFECYCLE`, `BACKEND_API_MAP.md`) okumadan `docker ps`/`ss -tlnp` ile sıfırdan keşfetmeye kalkmıştım — gereksiz tur. Cem haklı olarak durdurdu, dokümanlar okundu. Oradan çıkan ve deploy'u doğrudan şekillendiren gerçekler:
+- `fleet-enterprise-01`'de hiç PostgreSQL yok (tek instance `fleet-prod-01`'de, `10.0.0.2:5433`) → `cebi-db` için host portu 5433 serbest, çakışma riski yok.
+- Reverse proxy burada **Caddy** (nginx değil), Cloudflare Origin Certificate ile TLS termine ediliyor.
+- Port binding deseni: mevcut `tulipfleet-enterprise-backend` servisi `127.0.0.1:3001:3001` — sadece loopback'e bind, dışarıya hiç açık değil, erişim tamamen Caddy üzerinden.
+
+**Düzeltme — `docker-compose.cebi.yml` port binding'i (commit `8d4a90e`):** `"5433:5432"` ve `"3100:3000"` satırları host IP belirtmediği için `0.0.0.0`'a bind ediyordu. Enterprise-backend deseniyle tutarlı hale getirildi: `127.0.0.1:5433:5432`, `127.0.0.1:3100:3000`.
+
+**Yapılan (sırayla, canlı doğrulandı):**
+1. DNS: `cebi-api.tulipfleet.com` → `A` kaydı → `49.12.246.212`, Cloudflare Proxied (enterprise-api ile aynı desen), Cem tarafından oluşturuldu.
+2. Cloudflare Origin Certificate üretildi (`cebi-api.tulipfleet.com`), sunucuda `/etc/caddy/origin/cebi-api.{crt,key}` olarak kaydedildi (`enterprise-api.crt/.key` dosya izni deseniyle aynı: 644/640, root:caddy).
+3. `/etc/caddy/Caddyfile`'a yeni site bloğu eklendi (`cebi-api.tulipfleet.com { tls ...; reverse_proxy 127.0.0.1:3100 {...}; encode gzip zstd; header {...} }`), `caddy validate` temiz, `systemctl reload caddy` başarılı.
+4. Doğrulama: `curl -i https://cebi-api.tulipfleet.com/health` → **502** (beklenen/doğru — backend henüz yoktu), `server: cloudflare` header'ı ile Cloudflare üzerinden geçtiği kanıtlandı.
+5. Repo `/opt/cebi`'ye clone edildi (`/opt/fleet`, `/opt/enterprise` deseniyle tutarlı dizin adı). Baseline SHA (`23bfa4e7...`) doğrulandı.
+6. `cebi.env` oluşturuldu, `JWT_SECRET` (`openssl rand -hex 32`) ve `CEBI_DB_PASSWORD` (`openssl rand -hex 24`) üretildi — sadece varlık `grep -c` ile doğrulandı, değerler hiç ekrana/sohbete basılmadı (Sır Hijyeni kuralına uygun).
+7. **Tuzak (not edildi):** `docker-compose.cebi.yml`'deki `${CEBI_DB_PASSWORD}` interpolasyonu `env_file:`'dan değil, Compose CLI'nin kendi `.env` aramasından okunuyor — `cebi.env` adını `.env` yapmak yerine `docker compose --env-file cebi.env ...` kullanıldı. İlk deneme boş şifreyle kısmi init oldu, `down -v` ile temizlenip doğru şekilde tekrar başlatıldı.
+8. `cebi-db` ayağa kalktı, sağlıklı: `database system is ready to accept connections`, `127.0.0.1:5433`, izole `cebi-net` network.
+9. `cebi-backend`'in `HERE_API_KEY` zorunluluğu iddiam (Faz 1 raporunda "yoksa throw, backend başlamaz") **yanlış çıktı** — kodu (`services/routing/factory.js`, `HereRoutingProvider.js:46-52`) okuyunca: throw sadece `computeRoute()` çağrıldığında oluyor, handler bunu yakalayıp `{traffic:null, reason:"NOT_CONFIGURED"}` dönüyor; backend'in kendisi dış servis anahtarları olmadan sorunsuz başlıyor. Koddaki tek iki `process.exit(1)` yeri: eksik `JWT_SECRET` ve bir cron scheduler hatası — ikisi de bu deploy'u etkilemedi.
+10. `cebi-backend` build edilip ayağa kalktı, `127.0.0.1:3100`, `/health` → `200`, `{"database":"connected","mqtt":"disconnected"}`. `mqtt: disconnected` beklenen (ADR-CE-02 henüz "inceleniyor", broker yok). SMTP `EAUTH` hatası bekleniyor (dış servis anahtarları henüz yok, §11.4).
+11. **Bulgu (kritik değil, not edildi):** `/health` yanıtındaki `"redis":"connected"` **gerçek bir bağlantı değil** — `server.js:563`'te hardcoded sabit metin, hiçbir Redis sorgusu yapılmıyor. İzolasyon ihlali değil (ADR-CE-03'ü etkilemiyor), sadece health endpoint'inin güvenilmez/ölü bir alanı — ileride düzeltilebilir.
+
+**Sonuç — bu oturumun sonunda `fleet-enterprise-01` üzerinde çalışır durumda:** DNS + Caddy/TLS + `cebi-db` (izole) + `cebi-backend` (izole) — hepsi 127.0.0.1-only binding ile, ana projeden hiçbir ortak kaynak kullanmadan.
+
+**Sıradaki adım (henüz yapılmadı):** DB şemasız — `migrations/`'daki ham `.sql` dosyaları `cebi-db`'ye henüz uygulanmadı. Gerçek endpoint'ler (örn. `/api/auth/login`) şu an tablo bulamayıp hata verir.
+
+---
+
 ## 2026-10-18 (öğleden sonra) — Faz 4 başlangıcı: bağımsızlaştırma iskeleti
 
 **Altyapı kararı (Cem):** Yeni VPS kiralanmayacak — mevcut Hetzner sunucularından biri (kaynak kullanımı ~%3.4) fiziksel olarak paylaşılacak, ama tam mantıksal izolasyon korunacak: ayrı Docker network (`cebi-net`), ayrı Postgres instance/port (5433), ayrı `cebi.env`. Hedef: ileride dump+taşı ile sıfır kod değişikliğiyle bağımsız bir sunucuya geçilebilsin.
