@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+# Cebi (Customer Edition) secrets — gerçek değerler asla commit edilmez,
+# şablon (cebi.env.example) commit edilir.
+cebi.env
+!cebi.env.example
 *.pem
 *.key
 *.bak

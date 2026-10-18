@@ -1,0 +1,68 @@
+# TulipFleet Customer Edition (Cebi) — izole Docker Compose.
+#
+# ADR-CE-03 "Bağımsız Çalışma Zamanı": bu stack ana projenin (fleet-backend,
+# fleet-postgres, fleet-emqx) container'larından hiçbir şekilde link/import
+# edilmez. Aralarında ortak network, ortak volume veya ortak env YOKTUR.
+# Aynı fiziksel sunucuda (Hetzner) barındırılsa da mantıksal olarak tam
+# izoledir (Cem'in 18.10.2026 altyapı kararı — bkz. FORK_BASELINE.md).
+#
+# Kurulum adımları: DEPLOYMENT_RUNBOOK.md (bu repo).
+#
+# NOT: Bu dosya burada (sandbox) yazıldı ama hiçbir komutu buradan
+# çalıştırılmadı — bu session'ın ana projenin Hetzner sunucularına (SSH)
+# ağ erişimi yok. Uygulama adımları Cem'in kendi SSH erişimiyle, runbook'u
+# takip ederek yapılmalı.
+
+networks:
+  cebi-net:
+    name: cebi-net
+    driver: bridge
+
+volumes:
+  cebi_pgdata:
+    name: cebi_pgdata
+
+services:
+  cebi-db:
+    # Ana proje TimescaleDB kullanıyor (Faz 1 envanteri) — tutarlılık için
+    # aynı motor seçildi. Sade PostgreSQL yeterliyse postgres:16-alpine'a
+    # düşürülebilir; bu bir açık karar, DEPLOYMENT_RUNBOOK.md'de not edildi.
+    image: timescale/timescaledb:2.17.0-pg16
+    container_name: cebi-db
+    restart: unless-stopped
+    networks:
+      - cebi-net
+    environment:
+      POSTGRES_DB: ${CEBI_DB_NAME:-cebi_db}
+      POSTGRES_USER: ${CEBI_DB_USER:-cebi_admin}
+      POSTGRES_PASSWORD: ${CEBI_DB_PASSWORD}
+    volumes:
+      - cebi_pgdata:/var/lib/postgresql/data
+    ports:
+      # Sadece host'tan elle erişim için (psql, backup). cebi-backend
+      # buraya 'cebi-db:5432' üzerinden container network'ü içinden
+      # bağlanır, bu host port mapping'ine bağlı değildir.
+      # 5433 seçildi: ana projenin fleet-postgres'i muhtemelen 5432/farklı
+      # bir host portunda — deploy ÖNCESİ `docker ps` ve `ss -tlnp` ile
+      # çakışma kontrolü runbook'ta zorunlu adım.
+      - "5433:5432"
+
+  cebi-backend:
+    build: .
+    container_name: cebi-backend
+    restart: unless-stopped
+    depends_on:
+      - cebi-db
+    networks:
+      - cebi-net
+    env_file:
+      - ./cebi.env
+    environment:
+      # DATABASE_URL burada sabitlenir (cebi.env'de AYRICA tanımlanmamalı,
+      # çift tanım karışıklığı yaratır) — container network içinden
+      # 'cebi-db' servis adıyla bağlanır.
+      DATABASE_URL: postgres://${CEBI_DB_USER:-cebi_admin}:${CEBI_DB_PASSWORD}@cebi-db:5432/${CEBI_DB_NAME:-cebi_db}
+    ports:
+      # Host'tan erişim portu — varsayılan 3100, ana projenin kullandığı
+      # portlarla çakışmadığı deploy öncesi doğrulanmalı (runbook).
+      - "${CEBI_BACKEND_PORT:-3100}:3000"
