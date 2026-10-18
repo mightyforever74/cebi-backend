@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-10-19 (devam 14) — OLAY: cebi-db verisi kayboldu (container recreate, yanlış PGDATA volume yolu) — kök neden düzeltildi, kurtarma bekliyor
+## 2026-10-19 (devam 14) — OLAY: cebi-db verisi kayboldu (container recreate, yanlış PGDATA volume yolu) — kök neden düzeltildi, KURTARMA TAMAMLANDI
 
 **Ne oldu:** Dispatcher Faz A portunu doğrulamak için Cem `cd /opt/cebi && git pull && docker compose -f docker-compose.cebi.yml up -d --build cebi-backend` çalıştırdı. Çıktı `cebi-db`'yi de "Started" gösterdi (sadece `cebi-backend` istenmişti). Hemen sonrası `cebi-db` sürekli crash-loop'a girdi (`Restarting (1)`), log: `"Database is uninitialized and superuser password is not specified"`. `cebi-backend`'in kendi DB bağlantısı `EAI_AGAIN cebi-db` ile düştü (container ayakta değil, DNS çözülemiyor).
 
@@ -21,13 +21,16 @@
 2. Her iki dosyaya (`docker-compose.cebi.yml`, `cebi.env.example`) uyarı yorumu eklendi: `/opt/cebi/.env` (compose'un kendi, `cebi.env`'den AYRI dosyası) oluşturulup `CEBI_DB_PASSWORD`/`CEBI_DB_USER`/`CEBI_DB_NAME`/`CEBI_BACKEND_PORT` ile doldurulmalı — yoksa bu sınıf hata (sessiz boş string) tekrar eder.
 3. Yan bulgu, aynı commit'te düzeltildi: `cebi.env.example`'daki "`INTERNAL_BRIDGE_TOKEN` gerek yok" yorumu YANLIŞTI — `routes/internalBridge.js` zaten register edilmiş ve fail-closed bu değişkeni bekliyor.
 
-**Kurtarma — SIRADAKİ ADIM (henüz yapılmadı):**
-1. `/opt/cebi/.env` oluştur (yeni `CEBI_DB_PASSWORD` üret, `cebi.env`'deki değeri de aynı değerle güncelle — eski değer artık anlamsız, zaten fresh init olacak).
-2. `docker compose -f docker-compose.cebi.yml up -d` (bu kez TÜM stack, sadece `cebi-backend` değil) — `cebi-db` bu sefer doğru yolda ve dolu şifreyle initdb yapacak.
-3. Faz 4'teki şema import prosedürünü TEKRARLA (bu dosyanın "Faz 4: şema import tamamlandı" notu, `ts_insert_blocker` sed-fix + `create_hypertable()` adımları dahil) — prod'dan yeni bir `pg_dump --schema-only` ile.
-4. İlk seed veri (test şirketi + admin) yeniden oluştur.
-5. TÜM e2e scriptleri yeniden çalıştır (`cebi_e2e_test.sh`, `cebi_telemetry_e2e_test.sh`, `cebi_dispatcher_faza_e2e_test.sh`) — Dispatcher Faz A'nın kodu doğru ama HİÇ canlıda doğrulanamadı (DB olayı araya girdi), bu yüzden hâlâ "doğrulanmadı" statüsünde.
-6. `cebi_health_check.sh`'ı tekrar çalıştır, sistemin tam sağlıklı olduğunu teyit et.
+**Kurtarma — TAMAMLANDI (aynı gece):**
+1. `/opt/cebi/.env` oluşturuldu (yeni `CEBI_DB_PASSWORD`, `cebi.env` senkronize edildi). `docker compose -f docker-compose.cebi.yml up -d` — `cebi-db` bu sefer doğru yolda, dolu şifreyle temiz initdb yaptı (crash-loop yok, `/health` → `"database":"connected"`).
+2. **Şanslı kısayol:** prod'dan tekrar `pg_dump` almaya gerek kalmadı — Faz 4'te üretilmiş, TAM düzeltilmiş dump dosyası (`/opt/cebi/cebi_full_schema.sql`, 170KB) hâlâ diskte duruyordu (`CREATE SCHEMA public;` ve `ts_insert_blocker` satırları zaten silinmiş hali, grep ile doğrulandı). Doğrudan import edildi: 3 extension (`postgis`/`btree_gist`/`timescaledb`), 2 placeholder rol (`fleetadmin`/`enterprise_backend`), dump import, `GRANT USAGE` (public+enterprise → fleetadmin), `locations_pkey` composite (`id,time`) düzeltmesi, 8 `create_hypertable()` çağrısı — **tek seferde, hiç hata almadan** (geçen seferki 10 hatanın hiçbiri tekrar etmedi, çünkü hepsi zaten dump dosyasına/komut sırasına işlenmişti). Doğrulama: 39 `public` + 17 `enterprise` tablo + 8 hypertable — tam Faz 4 ile aynı.
+3. **Bulgu — eksik 4 migration:** restore edilen dump, Cebi-özel migrationlardan (fork SONRASI eklenenler, prod'da hiç yok) ÖNCE alınmıştı. `cebi_e2e_test.sh`/`cebi_telemetry_e2e_test.sh` ilk çalıştırmada `relation "weighbridge_readings" does not exist` ve `users_role_check` ihlali (`weighbridge_operator` rolü tanınmıyor) ile düştü. Kesin liste `git log --diff-filter=A -- migrations/` ile çıkarıldı (sadece 2 commit, fork'tan sonra migration eklemiş): `1785200000000_add-weighbridge-operator-role.sql`, `1785300000000_create-weighbridge-readings.sql`, `1785400000000_exception-events-add-trip-reconciliation-type.sql`, `1785500000000_create-mobile-location-pings.sql` — 4'ü sırayla `psql -f` ile uygulandı, hepsi temiz (sadece beklenen "trigger does not exist, skipping" NOTICE'ları, zararsız).
+4. İlk seed veri (test şirketi `e1f3ebdc-...` sabit UUID'le — e2e scriptlerindeki hardcoded değerle uyumlu olsun diye — + `admin@cebi-test.local`) yeniden oluşturuldu, `POST /api/auth/login` ile doğrulandı.
+5. **TÜM e2e scriptleri yeniden çalıştırıldı, ÜÇÜ DE TAM BAŞARILI:**
+   - `cebi_e2e_test.sh` (Weighbridge): tartımsız `/complete` → 400, tartım girişi → 201, tartımlı `/complete` → 200.
+   - `cebi_telemetry_e2e_test.sh` (Mobil Telemetri): rol gate 403, kabul 201 (accepted=3), idempotency 201 (duplicates=3), validasyon 400, DB count 3.
+   - `cebi_dispatcher_faza_e2e_test.sh` (Dispatcher Faz A — **bu olaydan önce HİÇ canlıda test edilememişti**): rol gate 403, `drivers`/`vehicles`/`locations/latest`/`tasks` → 200 + test verisi doğru görünüyor, `routes/active` → 200 + HERE'den **gerçek rota geometrisi** döndü (81 nokta) — `HereRoutingProvider` reuse'u da ayrıca kanıtlandı.
+6. Sonuç: sistem Faz 4 + Weighbridge + Mobil Telemetri + Dispatcher Faz A seviyesinde, hepsi canlıda yeniden doğrulanmış durumda. Kaybolan tek şey, bu olaydan önceki test/seed verisinin KENDİSİYDİ (yeni UUID'lerle yeniden oluşturuldu) — hiçbir kod/migration/mimari kaybı olmadı.
 
 ---
 
