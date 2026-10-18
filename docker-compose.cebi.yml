@@ -11,6 +11,19 @@
 # 127.0.0.1'e bind edilir, dışarıya hiç açılmaz; dış erişim Caddy üzerinden.
 #
 # Deployment Cem'le birlikte adım adım yapılıyor (bkz. FORK_BASELINE.md).
+#
+# ÖNEMLİ — OLAY (2026-10-19): bu dosyadaki ${CEBI_DB_PASSWORD} / ${CEBI_DB_USER} /
+# ${CEBI_DB_NAME} / ${CEBI_BACKEND_PORT} ifadeleri `cebi-backend` servisinin
+# `env_file: ./cebi.env`'inden DEĞİL — `docker compose`'un KENDİ değişken
+# ikamesinden (variable substitution) gelir. Bunun için bu dosyayla AYNI
+# dizinde bir `.env` dosyası (compose'un varsayılan olarak otomatik yüklediği,
+# `cebi.env`'den TAMAMEN AYRI bir dosya) bulunmalı ve bu 4 değişkeni
+# tanımlamalıdır. Yoksa (veya çalıştıran shell'de export edilmemişse) compose
+# SESSİZCE boş string'e düşer — `docker inspect` ile değil, hata fırlatmadan.
+# Bu tam olarak 2026-10-19'da cebi-db'nin verisini kaybetmesine yol açan
+# zincirin bir parçasıydı (diğer parça: yukarıdaki volume yolu hatası).
+# `.env` dosyası ASLA git'e commit edilmez (gizli değer içerir) — sadece
+# sunucuda, `cebi.env` ile aynı değerlerle elle oluşturulur.
 
 networks:
   cebi-net:
@@ -39,7 +52,17 @@ services:
       POSTGRES_USER: ${CEBI_DB_USER:-cebi_admin}
       POSTGRES_PASSWORD: ${CEBI_DB_PASSWORD}
     volumes:
-      - cebi_pgdata:/var/lib/postgresql/data
+      # OLAY (2026-10-19): bu satır eskiden /var/lib/postgresql/data'ya
+      # bağlıydı — ama timescale/timescaledb-ha:pg16 (Zalando Spilo tabanlı)
+      # image'inin GERÇEK PGDATA'sı /home/postgres/pgdata/data (container'ın
+      # kendi env'i ile doğrulandı: `docker inspect cebi-db` → PGDATA=...).
+      # Yani cebi_pgdata volume'ü HİÇBİR ZAMAN gerçek veriyi TUTMAMIŞTI; tüm
+      # kalıcılık bugüne kadar şans eseri container'ın kendi yazılabilir
+      # katmanından geliyordu (sadece `restart` ile hayatta kaldı, ilk
+      # `up -d --build` ile container SİLİNİP YENİDEN oluşturulduğunda veri
+      # kayboldu). Düzeltme: volume artık doğru yola bağlanıyor. Detay +
+      # kurtarma prosedürü: SESSION_NOTE.md "OLAY" notu.
+      - cebi_pgdata:/home/postgres/pgdata
     ports:
       # Sadece host'tan elle erişim için (psql, backup) — loopback'e bind,
       # dışarıya hiç açılmaz. cebi-backend buraya 'cebi-db:5432' üzerinden
