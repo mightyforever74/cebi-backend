@@ -21,6 +21,21 @@ OPERATOR_EMAIL="tarti1@cebi-test.local"
 DRIVER_PASSWORD=$(openssl rand -hex 12)
 OPERATOR_PASSWORD=$(openssl rand -hex 12)
 
+# İdempotent temizlik — önceki (başarısız/yarım kalmış) deneme kalıntılarını
+# siler, script güvenle tekrar çalıştırılabilir. Silme sırası FK'ler yüzünden
+# önemli: tasks -> drivers -> vehicles -> users.
+docker exec cebi-db psql -U cebi_admin -d cebi_db -v ON_ERROR_STOP=1 -c \
+  "DELETE FROM public.weighbridge_readings WHERE task_id IN (SELECT id FROM public.tasks WHERE task_no = 'CEBI-TEST-001');" >/dev/null
+docker exec cebi-db psql -U cebi_admin -d cebi_db -v ON_ERROR_STOP=1 -c \
+  "DELETE FROM public.tasks WHERE task_no = 'CEBI-TEST-001';" >/dev/null
+docker exec cebi-db psql -U cebi_admin -d cebi_db -v ON_ERROR_STOP=1 -c \
+  "DELETE FROM public.drivers WHERE license_no = 'TEST-LIC-001';" >/dev/null
+docker exec cebi-db psql -U cebi_admin -d cebi_db -v ON_ERROR_STOP=1 -c \
+  "DELETE FROM public.vehicles WHERE plate_no = 'TEST-34-CEBI' OR esp32_device_id = 'ESP32-CEBI-TEST-01';" >/dev/null
+docker exec cebi-db psql -U cebi_admin -d cebi_db -v ON_ERROR_STOP=1 -c \
+  "DELETE FROM public.users WHERE email IN ('$DRIVER_EMAIL', '$OPERATOR_EMAIL');" >/dev/null
+echo "Onceki test kalintilari temizlendi (varsa)."
+
 printf '%s\n' \
   "const bcrypt = require('bcryptjs');" \
   "bcrypt.hash(process.argv[2], 10).then(h => console.log(h));" \
@@ -35,26 +50,26 @@ echo "Hash'ler uretildi (uzunluklar: ${#DRIVER_HASH}, ${#OPERATOR_HASH})"
 DRIVER_USER_ID=$(docker exec cebi-db psql -U cebi_admin -d cebi_db -tAc \
   "INSERT INTO public.users (id, company_id, email, password_hash, role, first_name, last_name)
    VALUES (gen_random_uuid(), '$COMPANY_ID', '$DRIVER_EMAIL', '$DRIVER_HASH', 'driver', 'Test', 'Surucu')
-   RETURNING id;")
+   RETURNING id;" | head -n 1)
 OPERATOR_USER_ID=$(docker exec cebi-db psql -U cebi_admin -d cebi_db -tAc \
   "INSERT INTO public.users (id, company_id, email, password_hash, role, first_name, last_name)
    VALUES (gen_random_uuid(), '$COMPANY_ID', '$OPERATOR_EMAIL', '$OPERATOR_HASH', 'weighbridge_operator', 'Test', 'Tarti Memuru')
-   RETURNING id;")
+   RETURNING id;" | head -n 1)
 echo "driver user id: $DRIVER_USER_ID"
 echo "operator user id: $OPERATOR_USER_ID"
 
 VEHICLE_ID=$(docker exec cebi-db psql -U cebi_admin -d cebi_db -tAc \
   "INSERT INTO public.vehicles (id, company_id, plate_no, esp32_device_id, status)
    VALUES (gen_random_uuid(), '$COMPANY_ID', 'TEST-34-CEBI', 'ESP32-CEBI-TEST-01', 'available')
-   RETURNING id;")
+   RETURNING id;" | head -n 1)
 DRIVER_ID=$(docker exec cebi-db psql -U cebi_admin -d cebi_db -tAc \
   "INSERT INTO public.drivers (id, user_id, company_id, license_no, license_expiry, status, assigned_vehicle_id)
    VALUES (gen_random_uuid(), '$DRIVER_USER_ID', '$COMPANY_ID', 'TEST-LIC-001', '2030-01-01', 'available', '$VEHICLE_ID')
-   RETURNING id;")
+   RETURNING id;" | head -n 1)
 TASK_ID=$(docker exec cebi-db psql -U cebi_admin -d cebi_db -tAc \
   "INSERT INTO public.tasks (id, task_no, driver_id, vehicle_id, company_id, status, waypoints)
    VALUES (gen_random_uuid(), 'CEBI-TEST-001', '$DRIVER_ID', '$VEHICLE_ID', '$COMPANY_ID', 'in_progress', '[]'::jsonb)
-   RETURNING id;")
+   RETURNING id;" | head -n 1)
 echo "vehicle id: $VEHICLE_ID"
 echo "drivers.id: $DRIVER_ID"
 echo "task id: $TASK_ID"
