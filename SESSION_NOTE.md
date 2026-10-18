@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-10-19 (devam 14) — OLAY: cebi-db verisi kayboldu (container recreate, yanlış PGDATA volume yolu) — kök neden düzeltildi, kurtarma bekliyor
+
+**Ne oldu:** Dispatcher Faz A portunu doğrulamak için Cem `cd /opt/cebi && git pull && docker compose -f docker-compose.cebi.yml up -d --build cebi-backend` çalıştırdı. Çıktı `cebi-db`'yi de "Started" gösterdi (sadece `cebi-backend` istenmişti). Hemen sonrası `cebi-db` sürekli crash-loop'a girdi (`Restarting (1)`), log: `"Database is uninitialized and superuser password is not specified"`. `cebi-backend`'in kendi DB bağlantısı `EAI_AGAIN cebi-db` ile düştü (container ayakta değil, DNS çözülemiyor).
+
+**Teşhis (sırayla, canlı sunucuda):**
+1. `docker ps -a` → eski `cebi-db` container'ı YOK, sadece 4 dakika önce oluşturulmuş yeni bir ID (`550d3c664181`) var — yani compose container'ı SİLİP YENİDEN oluşturmuş, eski (gerçek veriyi içeren) container kalıcı olarak gitmiş.
+2. `docker inspect cebi-db --format='{{json .Config.Env}}'` → `POSTGRES_PASSWORD=` **BOŞ**. `docker-compose.cebi.yml`'deki `cebi-db` servisi `${CEBI_DB_PASSWORD}`'ı `cebi-backend`'in kullandığı `env_file: ./cebi.env` mekanizmasından DEĞİL, docker compose'un KENDİ değişken ikamesinden (bu dosyayla aynı dizinde bir `.env` dosyası ya da shell export gerektirir) okuyor — bu dosya/export yoktu, compose SESSİZCE boş string'e düştü.
+3. Bu, `cebi-db`'nin config'inin önceki çalışan haliyle farklı hash'lenmesine ve compose'un onu RECREATE etmesine sebep oldu (sadece `cebi-backend` istenmiş olsa bile — `depends_on` zinciri + config drift algılaması).
+4. `docker inspect cebi-db --format='{{json .Mounts}}'` → named volume `cebi_pgdata` `/var/lib/postgresql/data`'ya bağlı. AMA `docker inspect`'in env listesi `PGDATA=/home/postgres/pgdata/data` gösteriyor — **`timescale/timescaledb-ha:pg16` (Zalando Spilo tabanlı) image'inin gerçek veri yolu bambaşka bir yer.** Yani `cebi_pgdata` volume'ü **hiçbir zaman gerçek veriyi tutmamış** — bugüne kadarki tüm kalıcılık, container'ın kendi yazılabilir katmanından geliyordu (sadece `docker restart`'a dayanıklı, `up`/`--build` ile recreate'e karşı değil). Faz 4'ten (18.10.2026) beri container hiç recreate edilmemişti, bu yüzden bulgu şimdiye kadar gizli kaldı.
+
+**Kapsam — kaybolan:** Faz 4'te `pg_dump --schema-only` ile prod'dan import edilen şema (39 public + 17 enterprise tablo) + o andan sonra eklenen TÜM veri: ilk seed (test şirketi + `admin@cebi-test.local`), weighbridge/mobil-telemetri/dispatcher e2e test kullanıcıları ve kayıtları. **Kaybolmayan:** hiçbir gerçek müşteri verisi yok (henüz ödeme yapan müşteri yok) — prod (`fleet-prod-01`, ADR-CE-03 ile tam izole) bu olaydan HİÇ etkilenmedi, şema her zaman yeniden `pg_dump` edilebilir.
+
+**Kök neden düzeltmesi (commit `2c09a4b`), ikisi birden:**
+1. `docker-compose.cebi.yml`: volume artık `/home/postgres/pgdata`'ya bağlanıyor (doğru PGDATA yolu).
+2. Her iki dosyaya (`docker-compose.cebi.yml`, `cebi.env.example`) uyarı yorumu eklendi: `/opt/cebi/.env` (compose'un kendi, `cebi.env`'den AYRI dosyası) oluşturulup `CEBI_DB_PASSWORD`/`CEBI_DB_USER`/`CEBI_DB_NAME`/`CEBI_BACKEND_PORT` ile doldurulmalı — yoksa bu sınıf hata (sessiz boş string) tekrar eder.
+3. Yan bulgu, aynı commit'te düzeltildi: `cebi.env.example`'daki "`INTERNAL_BRIDGE_TOKEN` gerek yok" yorumu YANLIŞTI — `routes/internalBridge.js` zaten register edilmiş ve fail-closed bu değişkeni bekliyor.
+
+**Kurtarma — SIRADAKİ ADIM (henüz yapılmadı):**
+1. `/opt/cebi/.env` oluştur (yeni `CEBI_DB_PASSWORD` üret, `cebi.env`'deki değeri de aynı değerle güncelle — eski değer artık anlamsız, zaten fresh init olacak).
+2. `docker compose -f docker-compose.cebi.yml up -d` (bu kez TÜM stack, sadece `cebi-backend` değil) — `cebi-db` bu sefer doğru yolda ve dolu şifreyle initdb yapacak.
+3. Faz 4'teki şema import prosedürünü TEKRARLA (bu dosyanın "Faz 4: şema import tamamlandı" notu, `ts_insert_blocker` sed-fix + `create_hypertable()` adımları dahil) — prod'dan yeni bir `pg_dump --schema-only` ile.
+4. İlk seed veri (test şirketi + admin) yeniden oluştur.
+5. TÜM e2e scriptleri yeniden çalıştır (`cebi_e2e_test.sh`, `cebi_telemetry_e2e_test.sh`, `cebi_dispatcher_faza_e2e_test.sh`) — Dispatcher Faz A'nın kodu doğru ama HİÇ canlıda doğrulanamadı (DB olayı araya girdi), bu yüzden hâlâ "doğrulanmadı" statüsünde.
+6. `cebi_health_check.sh`'ı tekrar çalıştır, sistemin tam sağlıklı olduğunu teyit et.
+
+---
+
 ## 2026-10-19 (devam 13) — Dispatcher entegrasyonu: Faz A (Çekirdek Operasyon) portu başladı
 
 **Önceki tur kapanışı (not edilmemişti):** `FORK_BASELINE.md`'deki 3 güncel-olmayan madde (eski "MQTT kararı verilmedi" satırı, zaten doğrulanmış bir bölümün başlığının hâlâ "doğrulanmadı" demesi, yeni ops scriptlerinin belgelenmemiş olması) commit `2a909bc` ile düzeltildi.
