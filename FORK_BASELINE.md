@@ -46,12 +46,22 @@ Bu dosya, `cebi-backend` reposunun "doğum sertifikası"dır. Fork anındaki dur
 - **Completion gate:** `PUT /api/driver/tasks/:id/complete` artık tartım kaydı yoksa `400 "Weighbridge reading required before completion"` ile reddediyor — cihazdan bağımsız (`weighbridge_readings_current` view'ına bakıyor, `adapter_type`'a değil).
 - Uçtan uca doğrulandı (`scripts/dev/cebi_e2e_test.sh`, `fleet-enterprise-01`): tartımsız `/complete` → 400, tartım girişi → 201, tartımlı `/complete` → 200. Detay: `SESSION_NOTE.md`.
 
+**Mobil Telemetri (ADR-CE-01/ADR-CE-02) — KODLANDI, henüz canlıda doğrulanmadı (2026-10-18):**
+- Sunucu: `public.mobile_location_pings` (hypertable, 30 gün retention, `client_ping_id UNIQUE` ile idempotent), `POST /api/driver/telemetry/batch` (`cebi-backend`, commit `01a9861`).
+- Mobil: AsyncStorage local kuyruk + `expo-location.watchPositionAsync` ile foreground GPS toplama + 20s periyodik senkronizasyon (`cebi-mobile`, commit `505ce80`). Ayrıca bağımsız bir UX bug'ı düzeltildi: sürücü ekranı backend hatalarını (`{error:"..."}` şekli) hiç göstermiyordu, sadece `{message:"..."}` bakıyordu.
+- **Bilinçli kapsam sınırı:** V1 sadece foreground (ekran açık) takip — gerçek arka plan takibi `expo-task-manager` + native/EAS rebuild gerektirir, bu oturumda cihaz/simülatör erişimi yok. Ayrı bir takip maddesi.
+- ADR-CE-02 durumu: "Onaylandı" (v2). Detay: `docs/adr/ADR-CE-02-mobil-telemetri-iletimi.md`.
+- **Henüz `fleet-enterprise-01`'de UYGULANMADI/DOĞRULANMADI** — sıradaki adım: migration + `cebi-backend --build` + `scripts/dev/cebi_telemetry_e2e_test.sh` (weighbridge turundaki aynı iş birliği deseniyle, Cem'in erişimiyle).
+
 **Henüz açık:**
 - §9.2 tartım cihazı marka/model kararı — adapter implementasyonunu bekliyor, mimariyi bloklamıyor.
-- ADR-CE-04 "planlanan sefer sayısı" veri kaynağı — **çözüldü** (hibrit model: `dispatch_tasks`'tan otomatik türetim + audit'li override), ADR durumu "Onaylandı".
-- Override için rol kısıtı gerekip gerekmediği (ADR-CE-04 §5, küçük açık uç).
+- Mobil telemetrinin `fleet-enterprise-01`'de canlı doğrulanması (yukarıda).
+- Gerçek arka plan GPS takibi (ADR-CE-02 §4.2, native rebuild gerektiriyor).
+- OSRM/CARTO entegrasyonu (§9.7, vendor hesap erişimi gerekiyor) ve `cebi-mobile` Maps/Firebase credential ayrışması (Risk #14, GCP/Firebase console erişimi gerekiyor) — Cem'in seçimiyle bilinçli olarak sonraya bırakıldı.
 
-Bu repo artık altyapı+şema+dış servis+Weighbridge bounded context seviyesinde canlı ve fonksiyonel. Deployment Cem'le birlikte, adım adım yapılıyor — ayrı bir runbook dokümanı yok (standart: SESSION_NOTE.md + FORK_BASELINE.md + ADR, başka doküman türü eklenmez).
+ADR-CE-04 "planlanan sefer sayısı" veri kaynağı tamamen **çözüldü**: hibrit model (`dispatch_tasks`'tan otomatik türetim + audit'li override) VE override yetkisi (sadece `company_admin`/`super_admin`, `dispatcher` değiştiremez) — ADR durumu "Onaylandı" (v3), açık sorusu kalmadı.
+
+Bu repo artık altyapı+şema+dış servis+Weighbridge bounded context+Mobil Telemetri (kod seviyesinde) seviyesinde. Deployment Cem'le birlikte, adım adım yapılıyor — ayrı bir runbook dokümanı yok (standart: SESSION_NOTE.md + FORK_BASELINE.md + ADR, başka doküman türü eklenmez).
 
 ## Değişiklik günlüğü
 
@@ -69,3 +79,4 @@ Bu repo artık altyapı+şema+dış servis+Weighbridge bounded context seviyesin
 | 2026-10-18 | ADR-CE-04 "Onaylandı"ya geçti (hibrit planlanan-sefer-sayısı modeli, audit'li override, exception_events'e düşme, çift katmanlı tetikleme). |
 | 2026-10-18 | Weighbridge bounded context yazıldı ve push edildi: şema (append-only + current view), adapter pattern, route'lar, completion gate (`/complete` artık tartımsız seferi reddediyor). |
 | 2026-10-18 | Weighbridge + completion gate `fleet-enterprise-01`'de uçtan uca doğrulandı: migration'lar uygulandı, `scripts/dev/cebi_e2e_test.sh` ile tartımsız/tartımlı `/complete` senaryoları test edildi — ikisi de beklenen sonucu verdi. Detay: `SESSION_NOTE.md`. |
+| 2026-10-18 | ADR-CE-04 override yetkisi `company_admin`/`super_admin` ile sınırlandırıldı (v3, açık sorusu kalmadı). ADR-CE-02 (Mobil Telemetri) "Onaylandı"ya geçti: local queue + sunucu idempotency tasarlandı VE kodlandı (`cebi-backend` commit `01a9861`, `cebi-mobile` commit `505ce80`). V1 kapsamı bilerek foreground-only takip. Henüz `fleet-enterprise-01`'de doğrulanmadı. Detay: `SESSION_NOTE.md`, `docs/adr/ADR-CE-02-mobil-telemetri-iletimi.md`. |

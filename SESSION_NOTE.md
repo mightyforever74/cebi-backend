@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-10-18 (gece, devam 10) — ADR-CE-04 override rol kısıtı kapandı + ADR-CE-02 mobil telemetri "Onaylandı"
+
+**Cem'in kararı (iki konuyu birden çözen tek cevap):** "devam edelim" sonrası sunulan seçenekler arasından **ADR-CE-02 mobil telemetri**'yi seçti (gerekçe: dış vendor/console erişimi gerektirmiyor, kod-only, mimari önemde bir "İnceleniyor" maddesini kapatıyor). Aynı cevapta, önceki turdan açık kalan **ADR-CE-04 override yetkisi** sorusunu da netleştirdi: "ADR-CE-04 override yetkisi sadece company_admin'de olsun." → `docs/adr/ADR-CE-04-sefer-kapanis-reconciliation.md` v3'e işlendi: override yalnızca `company_admin`/`super_admin`, `dispatcher` değiştiremez (gerekçe: planlanan sayı aynı zamanda bir kaçak/atlanan sefer sinyali — operasyonel bir rolün bunu tek başına esnetebilmesi caydırıcılığı zayıflatır). ADR-CE-04'ün kalan tüm açık soruları kapandı (§5).
+
+**ADR-CE-02 — HTTPS batch senkronizasyon kesinleşti, local queue + sunucu idempotency TASARLANDI VE KODLANDI (tasarım belgesi değil):**
+
+*Sunucu tarafı (`cebi-backend`):*
+- `migrations/1785500000000_create-mobile-location-pings.sql` — `public.mobile_location_pings` (hypertable, 30 gün retention). Bilerek `public.locations` (ESP32, device_id bazlı) ile AYNI tabloya yazılmadı — farklı veri kaynağı (telefon GPS'i, device_id'siz). `client_ping_id UUID UNIQUE` — idempotency anahtarı.
+- `routes/mobileTelemetry.js` — `POST /api/driver/telemetry/batch`: sadece `driver` rolü, sadece kendi task'ı, task durumu kısıtlanmaz (gecikmeli/offline ping'ler meşru). Çoklu VALUES + `ON CONFLICT (client_ping_id) DO NOTHING`. `{submitted, accepted, duplicates}` döner. `server.js`'e register edildi.
+- Commit `01a9861` ile push edildi (henüz `fleet-enterprise-01`'e UYGULANMADI — migration + rebuild + doğrulama sıradaki adım).
+
+*Mobil taraf (`cebi-mobile`):*
+- `src/utils/uuid.js` — yeni native bağımlılık eklemeden (expo-crypto/react-native-get-random-values yok, bu oturumda native rebuild yapılamıyor) hafif UUID v4 üretici.
+- `src/services/telemetryQueue.js` — AsyncStorage tabanlı kalıcı local kuyruk (mevcut `storage.js` generic kalıbıyla).
+- `src/services/telemetrySync.js` — `expo-location.watchPositionAsync` ile GPS toplama + 20s periyodik toplu senkronizasyon. `startTracking(taskId)`/`stopTracking()`.
+- `src/services/api.js` — `telemetryAPI.sendBatch()` eklendi.
+- `src/screens/driver/DriverRouteMapScreen.js` — `task.status === "in_progress"` olduğu sürece takibi açık tutan bir effect eklendi (hem yeni başlayan sefer hem ekrana geri dönüş/remount senaryosu); unmount ve sefer tamamlama anında `stopTracking()` ile son flush.
+- **Yan bulgu ve düzeltme:** `handleStartTask`/`handleCompleteConfirm`/`handleAcceptTask`/reddet akışlarının hata gösterimi sadece `e.response?.data?.message`'a bakıyordu; backend'in standart hata şekli `{error: "..."}` (örn. weighbridge gate'inin "Weighbridge reading required before completion" mesajı) sürücüye HİÇ görünmüyordu. `.error` önce kontrol edilecek şekilde 4 yerde düzeltildi.
+- Commit `505ce80` ile push edildi.
+
+**Bilinçli kapsam sınırı (ADR-CE-02'ye işlendi, gizlenmedi):** V1 **sadece foreground (ekran açık) takip**. Gerçek arka plan takibi `expo-task-manager` + native/EAS rebuild gerektirir — bu oturumda cihaz/simülatör erişimi yok, test edilemez. Ayrı bir takip maddesi olarak kayıtlı.
+
+**Doğrulama durumu:** `node --check` (backend) ve `esbuild` ile JSX-uyumlu syntax kontrolü (mobil) yapıldı — ikisi de temiz. `scripts/dev/cebi_telemetry_e2e_test.sh` yazıldı (weighbridge scriptiyle aynı desen: idempotent temizlik, 4 test — rol gate 403, batch kabul 201, aynı batch tekrar → duplicate tespiti, geçersiz latitude → 400). **Henüz `fleet-enterprise-01`'de çalıştırılmadı** — migration'ın uygulanması ve `cebi-backend --build`'in sıradaki adım olarak Cem'in erişimiyle yapılması gerekiyor (weighbridge turundaki aynı iş birliği deseni).
+
+**Kalan açık maddeler:** §9.2 (tartım cihazı marka/model — değişmedi), gerçek arka plan GPS takibi (ADR-CE-02 §4.2), OSRM/CARTO entegrasyonu (§9.7, vendor erişimi gerekiyor), `cebi-mobile` Maps/Firebase credential ayrışması (Risk #14, GCP/Firebase console erişimi gerekiyor) — hiçbiri bu turda ele alınmadı (Cem'in seçimiyle bilinçli olarak sonraya bırakıldı).
+
+---
+
 ## 2026-10-18 (gece, devam 9) — Weighbridge + completion gate uçtan uca doğrulandı (fleet-enterprise-01)
 
 **Migration'lar uygulandı** (`fleet-enterprise-01`, `cebi-db`): `1785200000000` (weighbridge_operator rolü), `1785300000000` (weighbridge_readings + append-only trigger + current view), `1785400000000` (exception_events trip_count_reconciliation_mismatch tipi) — üçü de hatasız, `cebi-backend` `--build` ile yeniden ayağa kaldırıldı, `/health` → `200`.
