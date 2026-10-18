@@ -363,6 +363,26 @@ fastify.decorate("tenantFilter", function (request) {
   return { company_id: request.companyId };
 });
 
+// Dispatcher Faz A (Çekirdek Operasyon) portu, tulipfleet-enterprise-backend
+// plugins/auth.js'ten BİREBİR davranış: JWT'de role claim yoksa 401, rol
+// listede yoksa 403 { error: "Forbidden" }. Tüm /api/dispatcher/* rotaları
+// bu monolitte authenticate + requireRole("company_admin","super_admin")
+// ile korunur (dispatcher rolü KASITLI olarak dahil değil — kaynak kod
+// tulipfleet-enterprise-backend'in TÜM dispatcher-panel route'larında aynı
+// örüntü, grep ile doğrulandı).
+fastify.decorate("requireRole", (...roles) => {
+  return async (request, reply) => {
+    if (reply.sent) return;
+    const role = request.user && request.user.role;
+    if (!role) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    if (!roles.includes(role)) {
+      return reply.code(403).send({ error: "Forbidden" });
+    }
+  };
+});
+
 // ============================================
 // FEATURE FLAGS
 // ============================================
@@ -543,6 +563,14 @@ fastify.register(require("./routes/geofences")); // Geofence CRUD + edge events
 fastify.register(require("./routes/reports")); // Operations Report
 fastify.register(require("./routes/weighbridge")); // Weighbridge Operations (Faz 1 §3/§8.4/§9.5, ADR-CE-04)
 fastify.register(require("./routes/mobileTelemetry")); // Mobil Telemetri batch ingestion (ADR-CE-01/ADR-CE-02)
+
+// ── Dispatcher Faz A: Çekirdek Operasyon (tasks/drivers/vehicles/locations) ──
+// tulipfleet-enterprise-backend'ten porte edildi; VRP optimize/approve zinciri
+// kasıtlı olarak bu pasta DIŞINDA (bkz. routes/dispatcherTasks.js başlık yorumu).
+fastify.register(require("./routes/dispatcherDrivers"));
+fastify.register(require("./routes/dispatcherVehicles"));
+fastify.register(require("./routes/dispatcherLocations"));
+fastify.register(require("./routes/dispatcherTasks"));
 
 // ============================================
 // HEALTH & SYSTEM
