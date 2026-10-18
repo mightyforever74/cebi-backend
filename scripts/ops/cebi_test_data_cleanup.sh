@@ -12,31 +12,38 @@
 #
 # BİLEREK DOKUNULMAYAN: admin@cebi-test.local — bu, e2e test scriptlerinin
 # ürettiği scratch veri değil, Faz 4 deployment'ında atılan ilk temel seed
-# (test şirketi + company_admin) — altyapı doğrulaması için duruyor,
-# ayrı bir karar gerektirir, bu script onu silmez.
+# (test şirketi + company_admin) — ayrı bir karar gerektirir.
 #
-# İdempotent — tekrar çalıştırmak güvenli (zaten silinmiş satırlar için
-# hata vermez). FK sırası: weighbridge_readings/mobile_location_pings ->
-# tasks -> drivers -> vehicles -> users.
+# ÖNEMLİ — CEBI-TEST-001 (weighbridge) grubu KALICI OLARAK SİLİNEMEZ:
+# public.weighbridge_readings append-only bir denetim tablosudur (Faz 1
+# §9.5) — BEFORE DELETE trigger'ı bunu DAİMA reddeder (ispat edildi, ilk
+# çalıştırmada). Bu satır silinemediği için ona referans veren tasks ->
+# drivers/vehicles -> users zinciri de FK nedeniyle silinemez. Bu bir
+# BUG değil, tam da istenen davranış: bir tartım kaydı girildikten sonra
+# o seferin/sürücünün/aracın audit izi asla elle silinemiyor. Bu yüzden
+# bu script CEBI-TEST-001 grubuna artık HİÇ dokunmuyor — sadece
+# CEBI-TEST-002 (telemetri testi, weighbridge'siz) grubunu temizliyor.
+#
+# İdempotent — tekrar çalıştırmak güvenli. FK sırası:
+# mobile_location_pings -> tasks -> drivers -> vehicles -> users.
 
 set -uo pipefail
 
-echo "Silinecek test kullanicilari: driver1, tarti1, driver2, admin2 (@cebi-test.local)"
+echo "CEBI-TEST-001 (weighbridge) grubu: KALICI, silinmiyor (append-only audit tetikleyicisi engelliyor)."
+echo "Silinecek: sadece CEBI-TEST-002 (telemetri) grubu — driver2, admin2 (@cebi-test.local)"
 echo "DOKUNULMAYAN: admin@cebi-test.local (temel altyapi seed verisi)"
 echo ""
 
 docker exec cebi-db psql -U cebi_admin -d cebi_db -v ON_ERROR_STOP=1 -c \
-  "DELETE FROM public.weighbridge_readings WHERE task_id IN (SELECT id FROM public.tasks WHERE task_no IN ('CEBI-TEST-001','CEBI-TEST-002'));"
+  "DELETE FROM public.mobile_location_pings WHERE task_id IN (SELECT id FROM public.tasks WHERE task_no = 'CEBI-TEST-002');"
 docker exec cebi-db psql -U cebi_admin -d cebi_db -v ON_ERROR_STOP=1 -c \
-  "DELETE FROM public.mobile_location_pings WHERE task_id IN (SELECT id FROM public.tasks WHERE task_no IN ('CEBI-TEST-001','CEBI-TEST-002'));"
+  "DELETE FROM public.tasks WHERE task_no = 'CEBI-TEST-002';"
 docker exec cebi-db psql -U cebi_admin -d cebi_db -v ON_ERROR_STOP=1 -c \
-  "DELETE FROM public.tasks WHERE task_no IN ('CEBI-TEST-001','CEBI-TEST-002');"
+  "DELETE FROM public.drivers WHERE license_no = 'TEST-LIC-002';"
 docker exec cebi-db psql -U cebi_admin -d cebi_db -v ON_ERROR_STOP=1 -c \
-  "DELETE FROM public.drivers WHERE license_no IN ('TEST-LIC-001','TEST-LIC-002');"
+  "DELETE FROM public.vehicles WHERE plate_no = 'TEST-34-CEBI-02' OR esp32_device_id = 'ESP32-CEBI-TEST-02';"
 docker exec cebi-db psql -U cebi_admin -d cebi_db -v ON_ERROR_STOP=1 -c \
-  "DELETE FROM public.vehicles WHERE plate_no IN ('TEST-34-CEBI','TEST-34-CEBI-02') OR esp32_device_id IN ('ESP32-CEBI-TEST-01','ESP32-CEBI-TEST-02');"
-docker exec cebi-db psql -U cebi_admin -d cebi_db -v ON_ERROR_STOP=1 -c \
-  "DELETE FROM public.users WHERE email IN ('driver1@cebi-test.local','tarti1@cebi-test.local','driver2@cebi-test.local','admin2@cebi-test.local');"
+  "DELETE FROM public.users WHERE email IN ('driver2@cebi-test.local','admin2@cebi-test.local');"
 
 echo ""
 echo "Temizlik tamamlandi. Kalan @cebi-test.local kullanicilari:"
