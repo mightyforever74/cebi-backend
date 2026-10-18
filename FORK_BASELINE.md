@@ -25,16 +25,20 @@ Bu dosya, `cebi-backend` reposunun "doğum sertifikası"dır. Fork anındaki dur
 
 **Sunucu seçimi — KARARLAŞTIRILDI: `fleet-enterprise-01`.**
 
-**Henüz uygulanmadı (gerçek sunucuda), sadece kod/şablon seviyesinde hazır:**
-- `JWT_SECRET` — henüz üretilmedi (`openssl rand -hex 32`).
-- `DATABASE_URL` / Dedicated DB — henüz kurulmadı (compose dosyası hazır, sunucuda çalıştırılmadı).
+**Açık kararlar — İKİSİ DE ÇÖZÜLDÜ (2026-10-18, canlı deployment):**
+- ~~Domain/subdomain adlandırması~~ → **`cebi-api.tulipfleet.com`** kararlaştırıldı, DNS+Cloudflare Origin Certificate+Caddy ile canlıda çalışıyor.
+- ~~DB motoru~~ → **TimescaleDB HA + PostGIS** (`timescale/timescaledb-ha:pg16`) — ana projenin prod image'ıyla aynı aile (`INTEGRATION_BOUNDARIES.md §3.1`). Düz `timescaledb:2.17.0-pg16` önce denendi, PostGIS içermediği için (prod şemasında `public.geometry` tipi var) değiştirildi.
+
+**Uygulandı (gerçek sunucuda, `fleet-enterprise-01`):**
+- `JWT_SECRET`, `CEBI_DB_PASSWORD` — `openssl rand -hex` ile üretildi, sadece varlığı doğrulandı, değerler hiç ekrana basılmadı.
+- Dedicated DB (`cebi-db`) — tam prod şeması import edildi: 39 `public` + 17 `enterprise` tablo, 4 extension (`postgis`, `btree_gist`, `timescaledb`, `plpgsql`), 8 hypertable (doğru zaman kolonlarıyla). Detaylı saga: `SESSION_NOTE.md`.
+- `cebi-backend` — şemaya karşı fonksiyonel doğrulandı (`/health` → `200`, `"database":"connected"`; `/api/auth/login` → DB'ye karşı hatasız sorgu, `401 Invalid credentials` — tablo/kolon hatası yok).
+
+**Henüz uygulanmadı:**
 - Dış servis anahtarları (HERE, OSRM/CARTO, SMTP, Google Maps, OpenWeather) — hiçbiri tedarik edilmedi.
+- DB tamamen boş — henüz company/admin kullanıcı seed edilmedi.
 
-**Açık kararlar:**
-- Domain/subdomain adlandırması — Cebi kendi markası değil; `cebi-api.tulipfleet.com` mı, müşteri-nötr bir domain mi?
-- DB motoru — `docker-compose.cebi.yml` varsayılan olarak TimescaleDB seçti (ana projeyle tutarlılık); sade PostgreSQL yeterliyse değiştirilebilir.
-
-Bu repo, yukarıdaki adımlar tamamlanana kadar üretim ortamına karşı **çalıştırılmamalı**. Deployment Cem'le birlikte, adım adım yapılacak — ayrı bir runbook dokümanı yok (standart: SESSION_NOTE.md + FORK_BASELINE.md + ADR, başka doküman türü eklenmez).
+Bu repo artık altyapı+şema seviyesinde canlı ve fonksiyonel; dış servis anahtarları ve ilk seed veri eksik olduğundan **tam üretim kullanımına henüz hazır değil**. Deployment Cem'le birlikte, adım adım yapılıyor — ayrı bir runbook dokümanı yok (standart: SESSION_NOTE.md + FORK_BASELINE.md + ADR, başka doküman türü eklenmez).
 
 ## Değişiklik günlüğü
 
@@ -43,3 +47,4 @@ Bu repo, yukarıdaki adımlar tamamlanana kadar üretim ortamına karşı **çal
 | 2026-10-18 | Fork oluşturuldu, baseline sabitlendi. |
 | 2026-10-18 | Faz 4 başlangıcı: izole docker-compose + env şablonu eklendi (commit `c4b5113`). |
 | 2026-10-18 | Sunucu seçimi kararlaştırıldı: `fleet-enterprise-01`. Ayrı bir DEPLOYMENT_RUNBOOK.md dokümanı yazılmıştı — Cem'in talebiyle silindi (doküman standardımız SESSION_NOTE/FORK_BASELINE/ADR dışına çıkmıyor); deployment birlikte adım adım yapılacak. |
+| 2026-10-18 | Canlı deployment tamamlandı: domain (`cebi-api.tulipfleet.com`) + Caddy/TLS + `cebi-db`/`cebi-backend` izole container'ları + tam prod şeması (hypertable'lar dahil) + fonksiyonel doğrulama. İki açık karar (domain, DB motoru) çözüldü. Detay: `SESSION_NOTE.md`. |
