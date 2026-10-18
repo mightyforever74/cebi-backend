@@ -5490,6 +5490,24 @@ fastify.put(
       }
       const driverId = driverRows[0].id;
       const companyId = driverRows[0].company_id;
+
+      // ADR-CE-04 §2-A / Faz 1 §9.5 — tartım kaydı olmadan sefer "Completed"
+      // durumuna geçemez. Donanım-bağımsız: hangi weighbridge adapter'ı
+      // (manual/http/tcp/serial) kullanılmış olursa olsun, tüm kayıtlar aynı
+      // weighbridge_readings tablosuna düştüğü için bu kontrol cihaz
+      // marka/modelinden tamamen bağımsız çalışır (§9.2 bekleniyor olması
+      // bu gate'i ertelemek için gerekçe değildir).
+      const { rows: weighingRows } = await client.query(
+        "SELECT 1 FROM public.weighbridge_readings_current WHERE task_id = $1 LIMIT 1",
+        [id]
+      );
+      if (weighingRows.length === 0) {
+        await client.query("ROLLBACK");
+        return reply.code(400).send({
+          error: "Weighbridge reading required before completion",
+        });
+      }
+
       const { rows } = await client.query(
         "UPDATE tasks SET status = $1, actual_end = NOW(), updated_at = NOW() WHERE id = $2 AND driver_id = $3 RETURNING *",
         ["completed", id, driverId]

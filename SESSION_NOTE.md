@@ -20,7 +20,25 @@
 
 **Doğrulama durumu:** Sadece syntax-check (`node --check`) yapıldı — DB'ye karşı (`cebi-db`) henüz migration uygulanmadı, endpoint'ler canlıda test edilmedi. Sıradaki adım: Cem'in erişimiyle `fleet-enterprise-01`'de 3 migration'ı uygula, seed task ile `POST /api/weighbridge/readings` + `/current` uçtan uca doğrula.
 
-**Henüz açık:** §9.2 (cihaz marka/model), completion gate wiring, override için rol kısıtı gerekip gerekmediği (ADR-CE-04 §5).
+**Henüz açık:** §9.2 (cihaz marka/model), override için rol kısıtı gerekip gerekmediği (ADR-CE-04 §5).
+
+---
+
+## 2026-10-18 (gece, devam 8) — Completion gate bağlandı (Cem'in talebiyle, ertelenmedi)
+
+**Cem'in geri bildirimi:** Cihaz markasının bilinmemesi gate'i ertelemek için bahane değil — `ManualAdapter` zaten çalışıyor, `weighbridge_readings_current` hazır. Gate'i derhal bağla.
+
+**Bulgu (incelemeyle doğrulandı):** `tasks.status`'u `'completed'` yapan **tek** yer `PUT /api/driver/tasks/:id/complete` (server.js, "Complete Task" endpoint'i). `accept`/`reject`/`start` ayrı status'lar yazıyor (`accepted`/`rejected`/`in_progress`), `completed` yazmıyor. Waypoint tamamlanması (`updateWaypointStatusTx`, `/waypoints/:waypointId/complete`) task'ı otomatik `completed` yapmıyor — waypoint'lerin tamamı bitse bile sürücü ayrıca `/complete` çağırmak zorunda. Yani gate için tek, net bir choke point var — `updateWaypointStatusTx`'e dokunmaya gerek yok.
+
+**Yapılan (server.js, "Complete Task" endpoint'i içinde, `UPDATE tasks SET status='completed'`'tan hemen önce, aynı transaction içinde):**
+```sql
+SELECT 1 FROM public.weighbridge_readings_current WHERE task_id = $1 LIMIT 1
+```
+Satır yoksa `ROLLBACK` + `400 {"error":"Weighbridge reading required before completion"}` — tam Cem'in istediği mesaj. Satır varsa normal tamamlama akışına (odometer/GPS mesafe hesabı, alert, event insert, vb.) hiç dokunulmadan devam ediyor.
+
+**Donanım-bağımsızlık:** Kontrol `weighbridge_readings_current` view'ına bakıyor, `adapter_type`'a değil — `ManualAdapter` ile girilmiş bir kayıt da, ileride `HttpAdapter`/`TcpAdapter` ile girilecek bir kayıt da aynı şekilde geçerli sayılır. §9.2 netleştiğinde bu satırda hiçbir değişiklik gerekmeyecek.
+
+**Doğrulanmadı (henüz):** `node --check` ile syntax doğrulandı, ama gerçek DB'ye karşı (tartımsız task'ta 400 dönüyor mu, tartımlı task'ta normal akış bozulmadan devam ediyor mu) uçtan uca test edilmedi — migration'lar `cebi-db`'ye henüz uygulanmadı.
 
 ---
 
