@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-10-18 (gece) — Faz 4: şema import tamamlandı, `cebi-backend` gerçek şemaya karşı doğrulandı
+
+**Önceki girdinin "sıradaki adım"ı tamamlandı: DB şeması artık tam.** Domain kararı netleşti: `cebi-api.tulipfleet.com` (Caddyfile'a site bloğu eklendi, Cloudflare Origin Certificate, `/etc/caddy/origin/cebi-api.{crt,key}` — enterprise-api deseniyle aynı). `curl -i https://cebi-api.tulipfleet.com/health` önce `502` (backend henüz yoktu, `server: cloudflare` header'ıyla Cloudflare üzerinden geçtiği doğrulandı), backend ayağa kalkınca `127.0.0.1:3100` üzerinden `200` doğrulandı.
+
+**Bulgu — `migrations/` klasörü (38 dosya) tek başına yetersiz:** Hiçbir migration dosyası core tabloları (`vehicles`, `companies`, `users` vb.) `CREATE TABLE` etmiyor — gerçek bir base şema hiç git'e girmemiş. Ayrıca `public.*`/`enterprise.*` şemaları migration geçmişi boyunca FK ile derinlemesine iç içe geçmiş (10+ dosyada `public`'ten `enterprise`'a FK referansı) — "sadece public'i al, enterprise'ı atla" ayrımı migration dosyalarıyla pratik değil. 3 dosya da hiç oluşturulmamış bir `pgmigrations` tablosuna INSERT yapıyor.
+
+**Karar (Cem onayı: "kabul önerini a yı uygula lütfen"):** Migration dosyalarını düzenlemek yerine (fork baseline'ı asla değiştirilmez prensibi), gerçek prod şemasının `pg_dump --schema-only` dump'ı alındı ve olduğu gibi (enterprise dahil) import edildi. GRANT ifadelerinin başarılı olması için placeholder NOLOGIN roller oluşturuldu (`fleetadmin`, `enterprise_backend`) — zararsız, çünkü `cebi_admin` zaten Postgres superuser, ownership kısıtlamalarını zaten bypass ediyor.
+
+**Transfer yolu:** `fleet-enterprise-01`'den `fleet-prod-01`'e doğrudan SSH yok (`INTEGRATION_BOUNDARIES.md §7.1` — kasıtlı, yeni trust kurulmadı). Dump, Cem'in kendi laptop'u üzerinden iki adımlı `scp` ile taşındı.
+
+**Çözülen hatalar (sırayla):**
+1. `schema "public" already exists` — dump'ın kendi `CREATE SCHEMA public;` satırı (`sed -i '<satır>d'` ile silindi, sadece `public` satırı, `enterprise` satırı korundu).
+2. `role "fleetadmin" does not exist` — placeholder NOLOGIN rol oluşturuldu.
+3. `data type uuid has no default operator class for access method "gist"` (`idx_tasks_time_overlap` composite GIST index) — `CREATE EXTENSION btree_gist;`.
+4. `schema "_timescaledb_internal" does not exist` — `CREATE EXTENSION timescaledb;` (image kütüphaneyi sağlıyor ama extension objesini otomatik oluşturmuyor).
+5. `relation "enterprise.dispatch_tasks" does not exist` (sadece `--schema=public` dump'ında) — canlı prod şemasında bile `public`→`enterprise` FK bağımlılığı olduğu kanıtlandı → **plan değişti:** tek dump, `--schema=public --schema=enterprise`, migration replay'e hiç gerek yok.
+6. **Kritik öğrenim — psql `-c "stmt1; stmt2; stmt3"` örtük transaction'dır:** Birden fazla DDL'i aynı `-c` string'inde birleştirmek, son ifade hata verirse öncekileri de (psql ilerleyen başarı etiketlerini bastırmış olsa bile) geri alıyor. `enterprise` şemasının "zaten var" göründüğü ama aslında rollback olduğu bir vakayla keşfedildi (`pg_namespace` sorgusuyla doğrulandı). **Düzeltme:** bundan sonra her DDL ayrı `docker exec` çağrısı (ayrı bağlantı/session) olarak çalıştırıldı.
+7. `type "public.geometry" does not exist` — seçilen image (`timescale/timescaledb:2.17.0-pg16`) PostGIS içermiyor. `INTEGRATION_BOUNDARIES.md §3.1`'in zaten belgelediği gerçek prod image'ı ("TimescaleDB HA with PostGIS") hatırlandı → `docker-compose.cebi.yml`'de `cebi-db` image'ı `timescale/timescaledb-ha:pg16`'ya geçirildi (commit `f704029`), `git pull` + `down -v` + yeniden `up` ile düzeltildi.
+8. **Kendi hatam, aynı mesajda fark edilip düzeltildi:** `DROP SCHEMA public CASCADE` sonrası `public`'i boş `CREATE SCHEMA public;` ile geri getirip extension'ları (postgis, btree_gist, timescaledb) yeniden kurmayı unuttum — bir reset turunda tekrar `type "public.geometry" does not exist` hatasına yol açtı. Düzeltme: her schema reset'inden sonra 3 extension da ayrı `docker exec` çağrısıyla yeniden kuruluyor.
+9. `function _timescaledb_internal.insert_blocker() does not exist` — `ts_insert_blocker` trigger'ları prod'da `create_hypertable()`'ın otomatik ürettiği artefaktlar; düz `pg_dump --schema-only` trigger'ın varlığını yakalıyor ama alttaki hypertable-dönüşüm katalog kaydını yakalamıyor. Çözüm: `sed -i '/CREATE TRIGGER ts_insert_blocker/d' cebi_full_schema.sql` ile 8 trigger satırı (6 `public`, 2 `enterprise`) silindi, düz tablolar normal import edildi, sonra her biri için `SELECT create_hypertable(...)` ayrı ayrı çağrıldı (trigger'ı doğru şekilde otomatik yeniden oluşturuyor).
+10. `cannot create a unique index without the column "time" (used in partitioning)` (`public.locations`) — `locations_pkey` sadece `(id)` üzerindeydi, partition kolonunu içermiyordu (dump'ın yakaladığı haliyle; `exception_events` zaten `(id, occurred_at)` composite'ti, `locations` değildi — sebebi araştırılmadı, muhtemelen prod'da farklı bir unique mekanizması var). Düzeltme: `locations_pkey` düşürülüp `(id, time)` composite olarak yeniden oluşturuldu, sonra `create_hypertable` başarılı.
+
+**Hypertable'lar (8/8, zaman kolonlarıyla):** `public.locations` (`time`), `public.alerts` (`created_at`), `public.driver_behavior` (`created_at`), `public.geofence_violations` (`occurred_at`), `public.maintenance_records` (`created_at`), `public.system_logs` (`created_at`), `enterprise.exception_events` (`occurred_at`), `enterprise.locations_3p` (`time`) — `timescaledb_information.hypertables`'tan doğrulandı.
+
+**Son durum — şema tam:** 39 `public` + 17 `enterprise` tablo, 4 extension (`postgis`, `btree_gist`, `timescaledb`, `plpgsql`), 8 hypertable. `cebi-backend` yeniden başlatıldı (not: container önceki bir `down`'dan beri yokmuş, `up -d` ile yeniden oluşturuldu), `/health` → `200`, `"database":"connected"` (gerçek bağlantı; `"redis":"connected"` hâlâ hardcoded/sahte, önceki not geçerli). **Fonksiyonel doğrulama:** `POST /api/auth/login` yanlış kimlik bilgisiyle denendi → `{"error":"Invalid credentials"}` (401), log: `"Login attempt with non-existent user"` — sorgu `users` tablosuna karşı hatasız çalıştı (kolon/tablo hatası yok), şemanın backend koduyla fonksiyonel uyumu kanıtlandı.
+
+**Sıradaki adım (henüz yapılmadı):** DB tamamen boş — gerçek bir company/admin kullanıcı seed edilmeden API fonksiyonel olarak tam test edilemez (login dışında).
+
+---
+
 ## 2026-10-18 (akşam) — Faz 4: fleet-enterprise-01'de ilk canlı deployment
 
 **Cem'in geri bildirimi (doküman standardı düzeltmesi):** Önceden ayrı yazılmış `DEPLOYMENT_RUNBOOK.md` Cem tarafından reddedildi ("bu doküman nerden çıktı, istemiyorum") — standart sadece SESSION_NOTE.md + FORK_BASELINE.md + ADR. Dosya silindi (commit `1f8674f`), sunucu kararı (`fleet-enterprise-01`) doğrudan `FORK_BASELINE.md`'ye işlendi. Deployment bu oturumda Cem'le birlikte, SSH üzerinden adım adım konuşarak yapıldı — önceden yazılmış bir komut listesi üzerinden değil.
