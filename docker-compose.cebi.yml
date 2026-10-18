@@ -23,10 +23,13 @@ volumes:
 
 services:
   cebi-db:
-    # Ana proje TimescaleDB kullanıyor (Faz 1 envanteri) — tutarlılık için
-    # aynı motor seçildi. Sade PostgreSQL yeterliyse postgres:16-alpine'a
-    # düşürülebilir; bu açık bir karar (bkz. FORK_BASELINE.md).
-    image: timescale/timescaledb:2.17.0-pg16
+    # Ana proje "TimescaleDB HA (with PostGIS)" kullanıyor (INTEGRATION_BOUNDARIES.md
+    # §3.1) — tutarlılık için aynı image ailesi seçildi. Düz timescaledb:2.17.0-pg16
+    # image'i önce denendi ama PostGIS içermiyor, prod şemasında `public.geometry`
+    # tipine ihtiyaç var (18.10.2026 deploy'da bulundu, bkz. SESSION_NOTE.md).
+    # Sade PostgreSQL+PostGIS yeterliyse değiştirilebilir; bu açık bir karar
+    # (bkz. FORK_BASELINE.md).
+    image: timescale/timescaledb-ha:pg16
     container_name: cebi-db
     restart: unless-stopped
     networks:
