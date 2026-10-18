@@ -30,6 +30,18 @@
 
 **Sonuç:** `GOOGLE_MAPS_API_KEY` tedariki tamamlandı, Geocoding API'ye canlı istekle doğrulandı (İstanbul koordinatı → gerçek adres döndü). Sıradaki dış servis: `OPENWEATHER_API_KEY` — koddaki kullanım yeri henüz doğrulanmadı, önce grep ile teyit edilecek.
 
+## 2026-10-18 (gece, devam 4) — OPENWEATHER_API_KEY oluşturuldu (aktivasyon bekleniyor), SMTP (Zoho) tedarik edildi ve doğrulandı
+
+**OPENWEATHER_API_KEY:** Kod teyidi — `server.js:6068` ve `6240`, OpenWeatherMap Current Weather API (`api.openweathermap.org/data/2.5/weather`, `appid=` query-param, server-side), sürücü rota hava durumu için. `home.openweathermap.org/api_keys` üzerinden ayrı, Cebi'ye özel bir key oluşturuldu, `cebi.env`'e yazıldı. İlk fonksiyonel test `401 Invalid API key` döndü — bu **beklenen bir durum**, OpenWeatherMap'te yeni key'ler birkaç dakikadan birkaç saate kadar aktivasyon gecikmesi yaşayabiliyor (HERE'in 10 saniyelik gecikmesinin çok daha uzun karşılığı). **Henüz tekrar test edilmedi / doğrulanmadı — sıradaki adım.**
+
+**SMTP — ADR-CE-03 yorumu, Cem'in açık kararıyla:** Kod teyidi — `server.js` içinde `nodemailer`, varsayılanlar `smtp.gmail.com` / `noreply@tulipfleet.com` / gönderen adı hardcoded `"TulipFleet"` (satır 687-693, 767, 7040-7098). Cem'in kararı: Cebi de **aynı `info@tulipfleet.com` adresini** kullansın (HERE/Maps'teki "ayrı hesap" pattern'i burada uygulanmadı — bilinçli, açık bir karar). Teknik keşif: bu adres Gmail/Google Workspace değil, **Zoho Mail** (`mail.zoho.eu`, MX kayıtları Zoho'ya yönlü). Zoho da Gmail gibi hesap başına birden fazla, birbirinden bağımsız iptal edilebilir **Application-Specific Password** üretmeye izin veriyor — `accounts.zoho.eu/home#security/app-passwords` üzerinden Cebi'ye özel bir app password oluşturuldu (adres paylaşıldı, şifre paylaşılmadı — kısmi ADR-CE-03 uyumu). `SMTP_HOST=smtp.zoho.eu`, `SMTP_PORT=587`, `SMTP_USER`/`SMTP_FROM=info@tulipfleet.com`.
+
+**Doğrulama:** `nodemailer`'ın kendi `transporter.verify()` metoduyla (gerçek mail göndermeden, sadece SMTP bağlantı+auth kontrolü) `cebi-backend` container'ı içinden test edildi — `OK - SMTP bağlantısı ve kimlik doğrulama başarılı`. Not: test script'i `/tmp`'e değil **`/app`**'e kopyalanarak çalıştırıldı — `/tmp`'te `node_modules` yok, `nodemailer` gibi bağımlılık gerektiren script'ler `MODULE_NOT_FOUND` ile patlıyor; container'ın çalışma dizini (`/app`) kullanılmalı.
+
+**Tali not:** `server.js`'deki SMTP gönderen adı hala hardcoded `"TulipFleet"` (Cebi'ye özel bir marka adı değil) — bu bir ürün/marka netliği konusu, acil değil, ileride ele alınabilir.
+
+**Sonuç:** SMTP tamamlandı ve doğrulandı. Dış servis durumu: HERE ✓, Google Maps ✓, SMTP ✓, OpenWeather (key oluşturuldu, aktivasyon bekleniyor — henüz doğrulanmadı). OSRM/CARTO ve MQTT bilinçli olarak erteleniyor (bkz. `cebi.env.example` yorumları).
+
 ## 2026-10-18 (gece, devam) — İlk seed veri + gerçek login uçtan uca doğrulandı
 
 **Yapılan:** `companies` tablosuna bir test şirketi (`Cebi Test A.Ş.`, slug `cebi-test`), `users` tablosuna buna bağlı bir `company_admin` kullanıcısı (`admin@cebi-test.local`) eklendi. Şifre hash'i backend container'ının kendi `bcryptjs`'iyle (cost 10) üretildi — login kodunun (`server.js:594`) kullandığı algoritmayla garanti uyumlu olması için. Şifre değeri hiçbir adımda ekrana/sohbete basılmadı (Sır Hijyeni).

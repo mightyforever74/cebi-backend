@@ -35,9 +35,11 @@ Bu dosya, `cebi-backend` reposunun "doğum sertifikası"dır. Fork anındaki dur
 - `cebi-backend` — şemaya karşı fonksiyonel doğrulandı (`/health` → `200`, `"database":"connected"`); ilk seed veri (test şirketi + `company_admin` kullanıcısı) eklendi, `POST /api/auth/login` gerçek kimlik bilgisiyle denenip geçerli bir JWT token döndürdü — uçtan uca doğrulandı.
 - `HERE_API_KEY` — HERE Developer Portal'da aynı hesap altında ayrı bir app (**"TulipFleet Cebi"**, ana projenin "TulipFleet" app'inden farklı) + ayrı API key oluşturuldu (ADR-CE-03: ayrı hesap değil, paylaşılmayan secret yeterli — bkz. değişiklik günlüğü). Routing API v8'e doğrudan istek ile fonksiyonel doğrulandı. Detaylı saga (OAuth/API-key karışıklığı + `restart` vs `up -d` gotcha'sı): `SESSION_NOTE.md`.
 - `GOOGLE_MAPS_API_KEY` — `tulipfleet-523be` (ana proje GCP projesi) içinde ayrı, Cebi'ye özel key oluşturuldu, sadece Geocoding API'ye kısıtlı (ADR-CE-03: aynı pattern, paylaşılmayan credential). Billing hesabı bu oturumda projeye bağlandı (önceden bağlı değildi). Geocoding API'ye canlı istekle fonksiyonel doğrulandı. **Not:** bu süreçte oluşturulan ilk key yanlışlıkla sohbete sızdı (gcloud stderr log'u) ve hemen silinip yenisiyle değiştirildi — detay ve ders `SESSION_NOTE.md`'de.
+- `SMTP` — Cem'in açık kararıyla ana projenin e-posta adresi (`info@tulipfleet.com`, Zoho Mail) paylaşılıyor; şifre paylaşılmıyor, Cebi'ye özel bir Zoho App Password üretildi. `transporter.verify()` ile fonksiyonel doğrulandı.
 
 **Henüz uygulanmadı:**
-- Dış servis anahtarları: `OPENWEATHER_API_KEY`, SMTP — tedarik edilmedi (OSRM/CARTO ve MQTT bilinçli olarak erteleniyor).
+- `OPENWEATHER_API_KEY` — ayrı key oluşturuldu, OpenWeatherMap'in aktivasyon gecikmesi (birkaç dk–birkaç saat) nedeniyle henüz fonksiyonel doğrulanmadı.
+- OSRM/CARTO, MQTT — bilinçli olarak erteleniyor.
 - Weighbridge bounded context — kod/migration hâlâ yazılmadı.
 
 Bu repo artık altyapı+şema seviyesinde canlı ve fonksiyonel; dış servis anahtarları ve ilk seed veri eksik olduğundan **tam üretim kullanımına henüz hazır değil**. Deployment Cem'le birlikte, adım adım yapılıyor — ayrı bir runbook dokümanı yok (standart: SESSION_NOTE.md + FORK_BASELINE.md + ADR, başka doküman türü eklenmez).
@@ -53,3 +55,4 @@ Bu repo artık altyapı+şema seviyesinde canlı ve fonksiyonel; dış servis an
 | 2026-10-18 | İlk seed veri (test şirketi + `company_admin` kullanıcısı) eklendi, `/api/auth/login` gerçek JWT token döndürerek uçtan uca doğrulandı. |
 | 2026-10-18 | `HERE_API_KEY` tedarik edildi (ayrı "TulipFleet Cebi" app, ayrı key — aynı HERE hesabı), Routing API v8 ile fonksiyonel doğrulandı. Detay: `SESSION_NOTE.md`. |
 | 2026-10-18 | `GOOGLE_MAPS_API_KEY` tedarik edildi (ayrı key, `tulipfleet-523be` projesi, sadece Geocoding API), billing bağlandı, fonksiyonel doğrulandı. Süreçte sızan bir ara key tespit edilip derhal silindi/değiştirildi. Detay: `SESSION_NOTE.md`. |
+| 2026-10-18 | `OPENWEATHER_API_KEY` oluşturuldu (aktivasyon bekleniyor, henüz doğrulanmadı); `SMTP` tedarik edildi (`info@tulipfleet.com`/Zoho, ayrı app password) ve `transporter.verify()` ile doğrulandı. Detay: `SESSION_NOTE.md`. |
