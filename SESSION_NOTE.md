@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-10-19 (devam 21): §9.7 OSRM entegrasyonu koda eklendi; CARTO için Cem'in kararı bekleniyor
+## 2026-10-19 (devam 21): §9.7 OSRM entegrasyonu koda eklendi; CARTO bilinçli olarak ertelendi (Cem onayı)
 
 **Cem'in talimatı:** Build süresini beklerken OSRM/CARTO (§9.7) mimari tasarımına geçildi; vendor/cihaz erişimi gerektirmeyen, tamamen kontrol altındaki iş.
 
@@ -16,7 +16,7 @@
 - `cebi.env.example`: `OSRM_BASE_URL`/`OSRM_PROFILE`/`OSRM_TIMEOUT_MS` dokümante edildi.
 - `docker-compose.osrm.yml` (YENİ): self-hosted OSRM için iskelet (osrm/osrm-backend, MLD algoritması, `--profile prep` ile bir kerelik extract/partition/customize). Bu sandbox gerçek OSM verisi indiremediği için SADECE şablon — Cem'in kendi sunucusunda harita verisini indirip çalıştırması gerekiyor (dosya başlığında adım adım).
 
-**3. CARTO — kod YAZILMADI, Cem'in kararı bekleniyor:** yukarıdaki bulgu nedeniyle (madde 1), somut bir backend kullanım senaryosu netleşmeden spekülatif bir `CartoGeoProvider.js` eklemek "kanıt-önce" ilkesine aykırı olur. Cem'e sorulması gereken: hangi "katman/vektör veri" backend'de işlenecek (örn. CARTO'nun kendi spatial SQL API'si mi, yoksa frontend'deki basemap kullanımının ötesinde başka bir CARTO ürünü mü), yoksa bu madde CARTO hesabı açılana kadar ertelensin mi.
+**3. CARTO — kod YAZILMADI, Cem onayıyla ERTELENDİ:** yukarıdaki bulgu (madde 1) Cem'e sunuldu. **Karar (Cem, 2026-10-19):** backend'de spekülatif bir `CartoGeoProvider.js`/hayali spatial SQL katmanı yazılmayacak; `cebi-dispatcher`'daki mevcut frontend basemap-tile entegrasyonu harita görselleştirmesi için yeterli kabul edildi; madde gerçek CARTO hesabı + API key + somut bir kullanım senaryosu (spatial query veya vector layer talebi) netleşene kadar askıya alındı.
 
 ---
 
