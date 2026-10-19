@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-10-19 (devam 18): Dokümantasyon standardı düzeltmesi (Cem), `.cursorrules`, konsolide bulgular
+
+**Hata:** Cem'in "Faz A-3'e mi geçelim" sorusuna cevaben ayrı bir dosya, `docs/STRATEJIK_MIMARI_ANALIZ_2026-10-19.md`, oluşturuldu. Cem reddetti: proje dokümantasyon standardı sadece `SESSION_NOTE.md` + `FORK_BASELINE.md` + ADR üçlüsü (`claude/tulipfleet-customer-edition-faz1-kesif-raporu.md` §8.1, §11.2'de zaten yazılı kural, `DEPLOYMENT_RUNBOOK.md` için aynı düzeltme 18 Ekimde yapılmıştı). Dosya silindi (bu commit). İçeriği ilgili yerlere taşındı:
+
+1. **ADR-CE-03 v3** (`docs/adr/ADR-CE-03-bagimsiz-calisma-zamani.md`): yeni §3 "Doğrulama Kriterleri (DoD)", 4 madde (kod/DB/runtime/dış servis bağımsızlığı testleri). Faz 1 raporunun risk listesine de not düşüldü.
+2. **Faz 1 raporu** (`claude/tulipfleet-customer-edition-faz1-kesif-raporu.md`, Cem'e güncellenmiş dosya olarak geri gönderildi): yeni Risk #15 (`cebi-dispatcher/docs/` fork anında tüm enterprise ADR-0001..0014/ROADMAP ağacını işaretsiz devralmış, Cebi için bağlayıcı değil ama hiç işaretlenmemiş), §8.5 Briefing/CQRS netleştirmesi (`routes/reports.js` şu an on-demand canlı sorgu, haftalık cron job değil), markalama/çoklu-tenant açık sorusu not edildi.
+3. Bu girdi, bulguların kod kanıtını taşıyor (SESSION_NOTE'un işi).
+
+**Bulgu A (kod okunarak doğrulandı): GPS olayı ile iş durumu hiç karışmıyor.** `services/waypointGeofenceHelpers.js`'teki `applyGeofenceVisit()` sadece bir task'ın `waypoints` JSON alanını güncelliyor, `tasks.status`'a hiç dokunmuyor. İş durumu geçişleri her zaman ayrı bir API çağrısıyla tetikleniyor. 11 Ekim 2026'da bozuk legacy `checkGeofences()` (var olmayan DB kolonlarını okuyup sessizce başarısız oluyordu) kaldırıldı, tek yetkili mercii `services/geofenceService.js` (cihaz-taraflı tespit + sunucu doğrulama/dedup) oldu (`tests/geofenceLegacyRemoval.test.js`).
+
+**Bulgu B (kod okunarak doğrulandı): Operations Report, formal CQRS read-model değil.** `routes/reports.js`'teki `GET /api/reports/operations`, `tasks`/`vehicles` tablolarına `company_id` scope'lu doğrudan SQL agregasyonu. Faz 1 raporu §8.5'in önerdiği "haftalık cron tabanlı aggregation job" henüz yazılmadı, bu on-demand bir rapor sorgusu. Aksiyon gerektirmiyor, not edildi.
+
+**Bulgu C: `cebi-dispatcher/docs/` fork mirası işaretsiz.** `docs/ROADMAP.md` + `docs/adr/ADR-0001..0014` + `docs/functions/FEAT-*` (41 dosya) `tulipfleet-dispatcher`'dan fork anında birebir devralındı, hâlâ ana projenin kendi production gerçekliğini anlatıyor (`"enterprise-api → fleet_tracking (prod), bridge → core prod :3000"`). Hiçbir yerde "Cebi için bağlayıcı değil" ibaresi yok. `cebi-backend`/`cebi-mobile`'da bu sorun yok. Düzeltme önerisi var, henüz uygulanmadı (Cem'in onayı bekleniyor).
+
+**`.cursorrules` (Cem, GitHub'dan doğrudan, 3 reponun köküne):** rapor/retrospektif/konsolide strateji metni üretmeme, karara bağlanmış mimari kararları tekrar tartışmaya açmama, kapsam netken ara soru sormadan koda geçme, kısa/teknik yanıt, em-dash yasağı, jenerik AI-tasarım desenleri yasağı. Bu oturumdan itibaren uygulanıyor.
+
+---
+
 ## 2026-10-19 (devam 17) — Faz A-2: Dispatcher VRP Optimizasyon Portu (kod seviyesinde — henüz sunucuda deploy/test edilmedi)
 
 **Cem'in talimatı (birebir):** "Faz A-2'ye (VRP optimizasyon portu) geçelim."

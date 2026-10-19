@@ -3,7 +3,7 @@
 | Alan | Değer |
 |---|---|
 | **Durum** | Önerildi |
-| **Versiyon** | 2 |
+| **Versiyon** | 3 |
 | **Tarih** | 2026-10-19 |
 | **Karar veren** | Cem Sahinkaya (Kurucu / Tek Geliştirici) |
 | **Bileşen** | `cebi-backend`, `cebi-mobile`, `cebi-dispatcher` (tümü) |
@@ -40,7 +40,16 @@ MQTT kullanılıyorsa broker'ın bağımsız olması tek başına yeterli değil
 
 **7. Dağıtım platformu (Cem, 2026-10-19 — kapalı karar):** `cebi-dispatcher` paneli, Cloudflare Pages gibi harici bir statik-hosting platformuna DEĞİL, bu ADR'nin tek-sunucuda-tam-izolasyon ilkesine uygun olarak `fleet-enterprise-01`'in KENDİ Caddy'si üzerinden servis edilir — `cebi-backend`/`cebi-db`'nin zaten izlediği desenin aynısı (ayrı Docker network, sadece `127.0.0.1`'e bind, dış erişim host Caddy + Cloudflare Origin Certificate üzerinden; bkz. `cebi-dispatcher/docker-compose.cebi-dispatcher.yml`, `cebi-dispatcher/Dockerfile`). Gerekçe: Cloudflare Pages harici bir platforma çalışma-zamanı/dağıtım bağımlılığı kurar — madde 2'nin "yeni bir sunucuya tam taşınabilirlik" şartını ihlal eder (taşıma anında Pages projesini de yeniden kurmak/DNS'i orada yönetmek gerekirdi). Host Caddy'si zaten sunucunun kendi altyapısı olduğu için bu bağımlılık doğmaz. Domain: `cebi-dispatcher.tulipfleet.com` — **aynı gün canlıda doğrulandı** (DNS+Cloudflare Origin Cert+Caddy site bloğu+Docker, `https://cebi-dispatcher.tulipfleet.com` → `200`; bkz. `cebi-dispatcher/FORK_BASELINE.md`).
 
-## 3. Sonuçlar
+## 3. Doğrulama Kriterleri (Definition of Done)
+
+Madde 2'deki "tamamı bağımsız kurulabilmeli" ilkesinin somut doğrulama testleri:
+
+1. **Kod bağımsızlığı:** `grep -rn "fleet_tracking\|enterprise-api.tulipfleet\|api.tulipfleet.com"` üç Cebi reposunda da (tarihsel SESSION_NOTE referansları hariç) sıfır sonuç vermeli.
+2. **DB bağımsızlığı:** `cebi-db` migration/dump dosyaları ana projenin Postgres örneğine `dblink`/foreign data wrapper içermemeli; tüm FK'ler `cebi-db` içinde kapanmalı.
+3. **Runtime bağımsızlığı:** `docker-compose.cebi.yml` + `docker-compose.cebi-dispatcher.yml`, ana projenin container/network'ü ayakta olmadan temiz bir sunucuda ayağa kalkıp e2e test scriptlerini (Weighbridge, Mobil Telemetri, Dispatcher Faz A/A-2, CORS/JWT) geçmeli.
+4. **Dış servis bağımsızlığı:** `cebi.env.example`'daki her değişken, ana projenin `.env`'indeki değerden farklı olmalı (SMTP gönderen adresi hariç, madde 2.6'daki kabul edilen istisna).
+
+## 4. Sonuçlar
 
 ### 3.1 Olumlu
 - Müşteri sunucu değiştirirse (veya müşteri kendi sunucusunda barındırmak isterse) sıfır ana-proje bağımlılığı.
@@ -50,18 +59,19 @@ MQTT kullanılıyorsa broker'ın bağımsız olması tek başına yeterli değil
 - Hiçbir kod/altyapı paylaşımı yok — bakım iki kat (ama bu, Controlled Fork modelinin zaten kabul edilen maliyeti).
 - Ana projedeki ileride yapılacak güvenlik düzeltmeleri (örn. 14.10.2026 MQTT CWE-798 düzeltmesi gibi) otomatik taşınmaz; periyodik "drift review" ile elle değerlendirilmeli.
 
-## 4. Açık Sorular
+## 5. Açık Sorular
 - Periyodik drift review sıklığı ve süreci henüz tanımlanmadı (Controlled Fork'un "periyodik inceleme" bileşeni).
 
-## 5. Referanslar
+## 6. Referanslar
 - Faz 1 raporu: `claude/tulipfleet-customer-edition-faz1-kesif-raporu.md` §1, §4 (Risk #2/#3), §8.2
 - `FORK_BASELINE.md`, `SESSION_NOTE.md` (bu repo)
 
 ---
 
-## 6. Değişiklik Günlüğü
+## 7. Değişiklik Günlüğü
 
 | Versiyon | Tarih | Yazan | Değişiklik |
 |---|---|---|---|
-| 1 | 2026-10-18 | Cem Sahinkaya | İlk metin kaydedildi — "Önerildi". Fork sırasında henüz uygulanmadı (bkz. `FORK_BASELINE.md` bağımsızlık durumu). |
-| 2 | 2026-10-19 | Cem Sahinkaya | Madde 7 eklendi — dağıtım platformu kapalı karar: `cebi-dispatcher` Cloudflare Pages değil, `fleet-enterprise-01`'in kendi Caddy'si üzerinden servis edilir. Önerilen domain `cebi-dispatcher.tulipfleet.com`; `cebi-dispatcher` repo'suna `Dockerfile`/`docker-compose.cebi-dispatcher.yml` eklendi, henüz sunucuda deploy edilmedi. |
+| 1 | 2026-10-18 | Cem Sahinkaya | İlk metin kaydedildi, "Önerildi". Fork sırasında henüz uygulanmadı (bkz. `FORK_BASELINE.md` bağımsızlık durumu). |
+| 2 | 2026-10-19 | Cem Sahinkaya | Madde 7 eklendi, dağıtım platformu kapalı karar: `cebi-dispatcher` Cloudflare Pages değil, `fleet-enterprise-01`'in kendi Caddy'si üzerinden servis edilir. Domain `cebi-dispatcher.tulipfleet.com`; `cebi-dispatcher` repo'suna `Dockerfile`/`docker-compose.cebi-dispatcher.yml` eklendi, henüz sunucuda deploy edilmedi. |
+| 3 | 2026-10-19 | Claude | §3 "Doğrulama Kriterleri (DoD)" eklendi, 4 madde bağımsızlık testi. Fiilen uygulanan pratiğin (her feature'da e2e script ile tekrarlanan doğrulama) formelleştirilmesi, yeni karar değil. |
