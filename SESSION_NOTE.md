@@ -19,9 +19,15 @@
 6. `cebi-dispatcher/.dockerignore` eklendi.
 7. `cebi-dispatcher/FORK_BASELINE.md` ve `cebi-backend/FORK_BASELINE.md` güncellendi (karşılıklı çapraz referans, "Henüz açık" listesi güncellendi).
 
-**Önerilen domain:** `cebi-dispatcher.tulipfleet.com` (henüz DNS kaydı/Caddy site bloğu yok — `cebi-api.tulipfleet.com` deseniyle aynı: Cloudflare Proxied A kaydı + Origin Certificate + host `/etc/caddy/Caddyfile`'ına Cem tarafından elle eklenecek site bloğu, bu repo'nun dışında kalır).
+**Domain:** `cebi-dispatcher.tulipfleet.com` (`cebi-api.tulipfleet.com` deseniyle aynı: Cloudflare Proxied A kaydı + Origin Certificate + host `/etc/caddy/Caddyfile`'ına Cem tarafından elle eklenen site bloğu, bu repo'nun dışında kalır).
 
-**Sıradaki adım (henüz yapılmadı):** DNS kaydı + Cloudflare Origin Cert üretimi + host Caddy site bloğu (Cem'le birlikte, `cebi-api.tulipfleet.com` kurulumundaki adımların aynısı) + `fleet-enterprise-01`'de `docker compose -f docker-compose.cebi-dispatcher.yml up -d --build` + `curl -i https://cebi-dispatcher.tulipfleet.com` doğrulaması.
+**Aynı gün tamamlandı — canlıya alındı ve doğrulandı:**
+1. Cloudflare: A kaydı (`cebi-dispatcher.tulipfleet.com` → sunucu IP'si, Proxied) + Origin Certificate, sunucuda `/etc/caddy/origin/cebi-dispatcher.{crt,key}` (644/640, root:caddy — `cebi-api` deseniyle aynı).
+2. Host `/etc/caddy/Caddyfile`'a yeni site bloğu eklendi (mevcut `cebi-api.tulipfleet.com` bloğunun birebir kopyası, sadece `reverse_proxy 127.0.0.1:3101` ve sertifika dosya adları farklı). `caddy validate` + `systemctl reload caddy` temiz (sadece kozmetik `Unnecessary header_up` uyarıları, `cebi-api` bloğunda da zaten var).
+3. **Hata (yakalandı, düzeltildi):** `/opt/cebi-dispatcher`'da ilk `docker compose up -d --build` denemesi `npm ci` adımında `ERESOLVE` ile başarısız oldu — `react-scripts@5.0.1`'in peer `typescript` aralığı (`^3.2.1 || ^4`, `fork-ts-checker-webpack-plugin` üzerinden) kök `package.json`'daki `typescript@5.0.4` ile strict modda çakıştı. Kök neden: repo'da zaten `legacy-peer-deps=true` içeren bir `.npmrc` var ama Dockerfile sadece `package*.json`'ı `npm ci`'den önce kopyalıyordu, `.npmrc` kopyalanmamıştı. Düzeltme: `COPY package*.json .npmrc ./` (commit `a3d79af`), `git pull` + tekrar `up -d --build` ile temiz build (62.6s `npm ci` + 39.9s `npm run build`).
+4. Doğrulama: `docker ps` → `cebi-dispatcher` container `Up`, `127.0.0.1:3101->80/tcp`. `curl http://127.0.0.1:3101` → `200`, gerçek TulipFleet dispatcher paneli HTML'i (`<title>TulipFleet — Fleet Command Center</title>`, JS/CSS bundle'ları). `curl https://cebi-dispatcher.tulipfleet.com` → `200`, Cloudflare üzerinden (`server: cloudflare`, `cf-ray` mevcut, `via: 1.1 Caddy`), güvenlik header'ları doğru (`strict-transport-security`, `x-content-type-options: nosniff`, `x-frame-options: DENY`).
+
+**Henüz yapılmadı:** tarayıcıdan gerçek backend entegrasyonunun (login, `/api/dispatcher/*` çağrıları) uçtan uca denenmesi — bu tur sadece statik dosya servisini doğruladı.
 
 ---
 
