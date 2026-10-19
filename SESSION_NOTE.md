@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-10-19 (devam 20): Ana tulipfleet CI fix, Risk #14 tam kapanışı, Risk #15 doğrulaması, ADR-CE-02 §4.2 (arka plan GPS)
+
+**Cem'in talimatı:** Önce ana `tulipfleet` uygulamasının Play Console targetSdk-36 uyarısını düzelt, sonra Risk #14'e (cebi-mobile credential ayrışması) geç, sonra ADR-CE-02 §4.2'ye (gerçek arka plan GPS) başla.
+
+**1. Ana `tulipfleet` CI düzeltmesi:** `android-actions/setup-android@v3`, `packages` input'u boş bırakıldığında varsayılan olarak kırık `sdkmanager tools` komutunu çalıştırıyordu (Google bu eski paketi SDK deposundan kaldırmış). `.github/workflows/android-build.yml`'a `packages: "platform-tools platforms;android-36 build-tools;36.0.0"` eklendi (`0aad9ac`). Cem'in tekrar tetiklediği build (`39248985854`) sorunsuz ilerledi.
+
+**2. Risk #14 (cebi-mobile credential ayrışması) kapandı, `cebi-mobile` repo:**
+- Yeni, boş Firebase projesi (`cebi-mobile`, proje no `631643994904`) + 2 kısıtlı Maps key (`cebi-mobile-maps-android`/`-ios`, paket/bundle + debug SHA-1 kısıtlı) Cem tarafından Console'dan oluşturuldu (bu oturum Google OAuth'a giremiyor, network policy engeli).
+- Kök `google-services.json`/`GoogleService-Info.plist` + `app.json`'daki iki `googleMapsApiKey` güncellendi (`3d0991c`, `f0ef8b9`).
+- **Kritik düzeltme (`cb53858`):** `cebi-mobile`'ın CI'si de ana uygulama gibi `expo prebuild` ÇALIŞTIRMIYOR, commit'lenmiş `android/` klasöründen build alıyor. Gerçek Gradle `google-services` plugin'inin okuduğu dosya kök değil, `android/app/google-services.json`; hâlâ eski `tulipfleet-523be` projesine işaret ediyordu. Aynı şekilde `android/app/src/main/AndroidManifest.xml`'deki `com.google.android.geo.API_KEY` meta-data hardcoded eski paylaşılan key'i taşıyordu. İkisi de düzeltildi. Kod doğrulaması: `cebi-mobile`'da `@react-native-firebase` bağımlılığı yok, push `expo-notifications` üzerinden gidiyor, Maps-only API kısıtlaması başka bir şeyi kırmıyor.
+- Açık alt-risk: Android key SHA-1 kısıtlaması şu an debug keystore'a göre (henüz kendi Play Console listesi yok).
+
+**3. Risk #15 doğrulaması:** Cem bugün 13:33'te kendisi düzeltmiş (`39feb63`, `cebi-dispatcher` repo), `docs/ROADMAP.md`'ye tek bir not ekleyip hem kendisini hem `ADR-0001..0014` ağacını Cebi için bağlayıcı olmadığını işaretlemiş. Doğrulandı, dokunulmadı.
+
+**4. ADR-CE-02 §4.2: gerçek arka plan GPS takibi, `cebi-mobile` repo (`9c6f43d`):** `expo-task-manager@~14.0.9` eklendi (paket kaynağı indirilip AndroidManifest.xml + config-plugin kodu okunarak doğrulandı, varsayımla değil). Yeni dosyalar: `backgroundLocationTask.js` (TaskManager.defineTask, `index.js`'in en başında side-effect import), `telemetryFlush.js` (flushQueue, dairesel import'u önlemek için ayrıştırıldı), `activeTrackingTaskId.js` (aktif taskId kalıcı depoda, arka plan context'i in-memory state'e güvenemez). `telemetrySync.js`: `startTracking` artık arka plan iznini de deniyor, graceful degradation (red/hata foreground'u etkilemiyor). `AndroidManifest.xml`'e `ACCESS_BACKGROUND_LOCATION`/`FOREGROUND_SERVICE`/`FOREGROUND_SERVICE_LOCATION` elle eklendi (aynı "CI prebuild çalıştırmıyor" deseni). Detay: ADR-CE-02 v3.
+
+**AÇIK RİSK (hiçbiri bloklayıcı değil, kayıtlı):** ADR-CE-02 §4.2 implementasyonu bu oturumda gerçek cihazda test edilmedi (cihaz erişimi yok). cebi-mobile henüz Play Store'da değil; yayınlanmadan önce Google Play'in `ACCESS_BACKGROUND_LOCATION` policy review'ı + Android key SHA-1'in gerçek release imzalama anahtarıyla güncellenmesi ele alınmalı.
+
+---
+
 ## 2026-10-19 (devam 19), Faz A-3: Gerçek HERE Tour Planning Entegrasyonu (kod seviyesinde, unit-wiring testiyle doğrulandı, henüz canlı HERE çağrısı yapılmadı)
 
 **Cem'in talimatı:** "İlerle, sonraki adıma geç."
