@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-10-19 (devam 15) — cebi-dispatcher dağıtım platformu kapalı karar: Cloudflare Pages değil, fleet-enterprise-01 Caddy'si
+
+**Cem'in talimatı (birebir):** "Dağıtım platformu konusunda tereddüt etmene gerek yok. Cebi'nin tam izolasyon ve tek-sunucuda-taşınabilirlik (ADR-CE-03) prensibine uygun olarak `cebi-dispatcher`, Cloudflare Pages üzerinde değil, `fleet-enterprise-01` üzerindeki Caddy üzerinden servis edilecektir. Lütfen `cebi-dispatcher` build/config yapısını ve Caddyfile stratejisini buna göre kabul et ve bu başlığı kapalı karar olarak kaydet."
+
+**Gerekçe (ADR-CE-03'e bağlanarak):** Cloudflare Pages harici bir dağıtım platformuna çalışma-zamanı bağımlılığı kurardı — ADR-CE-03 madde 2'nin "yeni bir sunucuya tam taşınabilirlik" ilkesini ihlal eder (taşıma anında Pages projesini de yeniden kurmak gerekirdi). `cebi-backend`/`cebi-db` zaten host'un kendi Caddy'si + izole Docker network + `127.0.0.1`-only bind desenini izliyor; `cebi-dispatcher` aynı deseni takip ediyor.
+
+**Yapılan (bu turda, kod seviyesinde — henüz sunucuda deploy edilmedi):**
+1. `docs/adr/ADR-CE-03-bagimsiz-calisma-zamani.md` güncellendi: v1 → v2, §2'ye madde 7 ("Dağıtım platformu") eklendi, §6 changelog satırı eklendi.
+2. `cebi-dispatcher/Dockerfile` eklendi — iki aşamalı: `node:20-alpine` (CRA production build) + `caddy:2-alpine` (sadece statik dosya sunucusu). `REACT_APP_CEBI_API_URL` CRA'da build-time inline edildiği için bir `ARG`/`ENV` olarak geçirildi, varsayılan `https://cebi-api.tulipfleet.com` (zaten canlı backend domaini, gizli değer değil — tarayıcıda zaten görünür).
+3. `cebi-dispatcher/docker/Caddyfile` eklendi — container-içi, sadece SPA fallback (`try_files {path} /index.html`). Host Caddy'sinin TLS/Cloudflare Origin Cert/gzip/header işini TEKRAR etmiyor (çift katman kasıtlı olarak kurulmadı).
+4. `cebi-dispatcher/docker-compose.cebi-dispatcher.yml` eklendi — izole `cebi-dispatcher-net` network, `127.0.0.1:3101:80` (backend'in `127.0.0.1:3100` desenini takip eder), `cebi-backend`/`cebi-db` ile hiçbir ortak kaynak yok.
+5. **Bilinçli olarak 2026-10-19 cebi-db olayının dersi tekrar üretilmedi:** bu compose dosyasında docker compose'un kendi `.env`-ikamesine bağlı HİÇBİR `${DEĞİŞKEN}` yok — `REACT_APP_CEBI_API_URL` gizli olmadığı için Dockerfile'da sabit bir `ARG` varsayılanı olarak çözüldü, ayrı bir `.env` dosyası gerektirmiyor.
+6. `cebi-dispatcher/.dockerignore` eklendi.
+7. `cebi-dispatcher/FORK_BASELINE.md` ve `cebi-backend/FORK_BASELINE.md` güncellendi (karşılıklı çapraz referans, "Henüz açık" listesi güncellendi).
+
+**Önerilen domain:** `cebi-dispatcher.tulipfleet.com` (henüz DNS kaydı/Caddy site bloğu yok — `cebi-api.tulipfleet.com` deseniyle aynı: Cloudflare Proxied A kaydı + Origin Certificate + host `/etc/caddy/Caddyfile`'ına Cem tarafından elle eklenecek site bloğu, bu repo'nun dışında kalır).
+
+**Sıradaki adım (henüz yapılmadı):** DNS kaydı + Cloudflare Origin Cert üretimi + host Caddy site bloğu (Cem'le birlikte, `cebi-api.tulipfleet.com` kurulumundaki adımların aynısı) + `fleet-enterprise-01`'de `docker compose -f docker-compose.cebi-dispatcher.yml up -d --build` + `curl -i https://cebi-dispatcher.tulipfleet.com` doğrulaması.
+
+---
+
 ## 2026-10-19 (devam 14) — OLAY: cebi-db verisi kayboldu (container recreate, yanlış PGDATA volume yolu) — kök neden düzeltildi, KURTARMA TAMAMLANDI
 
 **Ne oldu:** Dispatcher Faz A portunu doğrulamak için Cem `cd /opt/cebi && git pull && docker compose -f docker-compose.cebi.yml up -d --build cebi-backend` çalıştırdı. Çıktı `cebi-db`'yi de "Started" gösterdi (sadece `cebi-backend` istenmişti). Hemen sonrası `cebi-db` sürekli crash-loop'a girdi (`Restarting (1)`), log: `"Database is uninitialized and superuser password is not specified"`. `cebi-backend`'in kendi DB bağlantısı `EAI_AGAIN cebi-db` ile düştü (container ayakta değil, DNS çözülemiyor).
