@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-10-19 (devam 16) — cebi-dispatcher canlı domain'inden uçtan uca doğrulama: CORS/JWT/dispatcher endpoint'leri
+
+**Cem'in talebi:** `admin@cebi-test.local`/`admin2@cebi-test.local` ile `https://cebi-dispatcher.tulipfleet.com`'dan giriş + `/api/dispatcher/*` çağrılarının tarayıcı tabanlı (CORS dahil) uçtan uca test edilmesi.
+
+**Yöntem:** Gerçek bir tarayıcı yerine, `cebi-dispatcher.tulipfleet.com` zaten herkese açık (Cloudflare Proxied) olduğu için doğrudan `https://cebi-api.tulipfleet.com`'a `Origin: https://cebi-dispatcher.tulipfleet.com` header'ıyla istek atıldı — bu, bir tarayıcının CORS preflight + gerçek istek davranışını birebir taklit eder ve CORS header'larının (`access-control-allow-origin`) gerçekten doğru döndüğünü garanti eder (curl CORS'u engellemez ama sunucunun ne döndüreceğini tam gösterir).
+
+**Bulgu 1 — CORS: sorunsuz.** `OPTIONS /api/auth/login` ve `OPTIONS /api/dispatcher/drivers`, `Origin: cebi-dispatcher.tulipfleet.com` ile `204` + `access-control-allow-origin: *` + doğru `-headers`/`-methods` döndü. JWT `Authorization` header'ında taşındığı için (cookie değil) wildcard CORS güvenlik sorunu değil.
+
+**Bulgu 2 (gerçek hata, bulundu ve düzeltildi) — `admin@cebi-test.local`'ın şifresi bilinmiyordu, tek seferlik `browsertest@cebi-test.local` test hesabı oluşturulurken `hash_pw.js` ile ilgili gizli bir hata ortaya çıktı:**
+- `/app/hash_pw.js`, git'e hiç girmemiş, ad-hoc olarak eski bir container'ın yazılabilir katmanına elle eklenmiş bir yardımcı scriptti. `cebi-backend` her `--build` ile recreate edildiğinde (Dispatcher Faz A deploy'u, cebi-db kurtarma turu) sessizce kayboluyordu.
+- Sonuç zinciri: `BT_HASH=$(docker exec cebi-backend node /app/hash_pw.js "$BT_PASSWORD")` → script `MODULE_NOT_FOUND` ile stderr'e hata yazdı, `$(...)` sadece stdout yakaladığı için `$BT_HASH` SESSİZCE boş string oldu → `INSERT`e boş `password_hash` yazıldı → `/api/auth/login` her zaman `401 Invalid credentials` döndü (log: `"Login attempt with wrong password"`), hiçbir yerde açık bir hata fırlamadan.
+- Teşhis: `docker logs cebi-backend --tail 20` ile hangi 401 nedeninin ("non-existent user" vs "wrong password") tetiklendiği ayrıştırıldı; `SELECT length(password_hash)` → `0` ile hash'in hiç yazılmadığı doğrulandı.
+- Geçici düzeltme (canlıda): `docker exec cebi-backend node -e "require('bcryptjs').hash(...)"` ile inline hash üretilip `UPDATE`lendi (`$2b$10$`, 60 karakter — doğru format).
+- **Kalıcı düzeltme:** `hash_pw.js` artık `cebi-backend` repo köküne commit edildi (`bcryptjs` kullanıyor, `server.js:624`'teki login karşılaştırmasıyla aynı kütüphane) — `COPY . .` sayesinde bir sonraki build'de otomatik `/app/hash_pw.js` olarak gelecek, bu sınıf hata bir daha sessizce oluşmayacak.
+
+**Sonuç — tam doğrulandı:** `POST /api/auth/login` → `200`, geçerli JWT + `user`/`company` payload'ı. JWT ile `GET /api/dispatcher/drivers`, `/vehicles`, `/locations/latest`, `/tasks` → hepsi `200`, gerçek test verisi (`driver1@cebi-test.local`, `TEST-34-CEBI` plakası, ESP32 konum pingi, `CEBI-TEST-002` görevi). Token'sız istek → `401` (rol gate çalışıyor). `cebi-dispatcher.tulipfleet.com` → `cebi-api.tulipfleet.com` zincirinin tamamı (CORS + JWT + endpoint response) artık gerçek domain'den doğrulanmış durumda — önceki tur sadece statik dosya servisini doğrulamıştı.
+
+**Temizlik (henüz yapılmadı):** `browsertest@cebi-test.local` test hesabı DB'de duruyor, silinmesi gerekiyor:
+```bash
+docker exec cebi-db psql -U cebi_admin -d cebi_db -c \
+  "DELETE FROM public.users WHERE email = 'browsertest@cebi-test.local';"
+```
+
+---
+
 ## 2026-10-19 (devam 15) — cebi-dispatcher dağıtım platformu kapalı karar: Cloudflare Pages değil, fleet-enterprise-01 Caddy'si
 
 **Cem'in talimatı (birebir):** "Dağıtım platformu konusunda tereddüt etmene gerek yok. Cebi'nin tam izolasyon ve tek-sunucuda-taşınabilirlik (ADR-CE-03) prensibine uygun olarak `cebi-dispatcher`, Cloudflare Pages üzerinde değil, `fleet-enterprise-01` üzerindeki Caddy üzerinden servis edilecektir. Lütfen `cebi-dispatcher` build/config yapısını ve Caddyfile stratejisini buna göre kabul et ve bu başlığı kapalı karar olarak kaydet."
