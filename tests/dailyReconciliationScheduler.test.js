@@ -7,10 +7,19 @@
  * + runDailyReconciliationBatch'in client.connect/release ve hata
  * davranışı; gerçek setTimeout zamanlayıcısının kendisi test edilmiyor).
  *
- * yesterdayDateString testleri ÖZELLİKLE önemli: bu fonksiyon önceden
- * toISOString() kullanıyordu, bu da Europe/Istanbul (UTC+3) yerel saatinde
- * 00:00-03:00 arası çalışınca sistematik olarak YANLIŞ (bir gün önceki) bir
- * UTC tarihi döndürüyordu — bkz. aşağıdaki test, bu regresyonu kilitler.
+ * yesterdayDateString testleri ÖZELLİKLE önemli: fonksiyon toISOString()
+ * (UTC) yerine getFullYear/getMonth/getDate (container'ın kendi yerel
+ * saati) kullanır. Production'da bu UTC'ye eşittir — cebi-backend
+ * container'ında TZ set edilmemiş, Node varsayılan UTC kullanır — ve bu
+ * BİLİNÇLİ/DOĞRU: public.tasks.scheduled_start de UTC saat olarak
+ * yazılıyor (routes/internalBridge.js:44), yani bu fonksiyon DB'nin
+ * gün-sınırlarıyla aynı takvimde kalıyor. 19 Ekim 2026'da bu dosya ilk
+ * yazılırken yanlışlıkla "production Europe/Istanbul'da çalışıyor"
+ * varsayılmıştı (bkz. dailyReconciliationScheduler.js'teki TIMEZONE NOTU)
+ * — gerçek dağıtımın UTC olduğu sonradan doğrulandı, kod değişmedi (zaten
+ * doğru davranıyordu) ama bu yorumlar düzeltildi. Testler kendileri
+ * timezone-bağımsız kalır: fonksiyon hangi yerel saatte çalışırsa çalışsın
+ * KENDİ takvimiyle tutarlı "dün"ü üretmeli, aşağıdaki testler bunu doğrular.
  *
  * Run: node --test tests/dailyReconciliationScheduler.test.js
  */
@@ -38,13 +47,11 @@ test("msUntilNext: saat gectiyse ertesi gune kurar", () => {
 });
 
 // ── yesterdayDateString ──────────────────────────────────────────────────
-// REGRESYON: toISOString() ile yazilan ilk versiyon, Europe/Istanbul
-// (UTC+3) yerel saatinde gece 00:00-03:00 arasi calistiginda BIR GUN ERKEN
-// bir tarih donuyordu (yerel 19 Ekim 00:10 -> UTC 18 Ekim 21:10 ->
-// "2026-10-18" yerine yanlislikla "2026-10-17"). Bu test suitinin calistigi
-// ortamin kendi yerel saat dilimi ne olursa olsun (process.env.TZ'ye
-// bagli), fonksiyon LOKAL takvim gunune gore hesaplamali - toISOString
-// (UTC) DEGIL.
+// Fonksiyon container'in LOKAL takvim gunune gore hesaplar (toISOString/UTC
+// degil) - bu test suitinin calistigi ortamin TZ'si ne olursa olsun
+// kendi takvimiyle tutarli olmali. Production'da lokal=UTC oldugu icin bu
+// ayni zamanda scheduled_start'in UTC takvimiyle de ortusur (bkz. dosya
+// basindaki not).
 
 test("yesterdayDateString: gece yarisindan hemen sonra (00:10 yerel) dogru 'dun'u doner", () => {
   const now = new Date(2026, 9, 19, 0, 10, 0); // yerel: 19 Ekim 2026 00:10 (ay 0-index: 9=Ekim)

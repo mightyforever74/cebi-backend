@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-10-19 (akşam, devam 22'nin düzeltmesi): "yesterdayDateString Europe/Istanbul bug fix" yanlış gerekçeliydi — canlı deploy'da bulundu, düzeltildi
+
+**Bağlam:** "devam 22" migration'ları canlıya uygulandıktan sonra, `cebi-backend` container'ı yeniden başlatıldığında loglarda reconciliation cron'unun `nextRunInMs` değeri incelendi — ~4 saat sonrasına (00:10 **UTC**, yani 03:10 İstanbul) kurulduğu görüldü, "devam 22"'de iddia edilen "Europe/Istanbul yerel saat 00:10" değil.
+
+**Kök neden araştırması:** `cebi-backend` container'ında `TZ` hiç set edilmemiş (`docker-compose.cebi.yml`/`Dockerfile` kontrol edildi, hiçbiri), Node varsayılan olarak UTC'yi "yerel saat" sayıyor. İlk refleks: `TZ=Europe/Istanbul` eklemek (Cem onayladı), ama uygulamadan önce DB tarafı kontrol edildi ve şu bulunduk:
+- `routes/internalBridge.js:44` — `scheduled_start`/`scheduled_end` payload'a "ISO, UTC saat" olarak yazılıyor, dokümante edilmiş.
+- `migrations/1782800000000_bug1-overlap-foundation.sql:12` — "scheduled_start/end timestamp WITHOUT tz, DB Etc/UTC" notu.
+- `routes/dispatcherTasks.js:121` — "bugünün görevleri" filtresi Postgres `CURRENT_DATE`'e dayanıyor (DB `Etc/UTC` olduğu için bu da UTC takvimi).
+
+**Sonuç:** Sistemdeki TÜM gün-sınırı hesaplamaları zaten UTC'ye göre, bilinçli ve tutarlı bir şekilde. `yesterdayDateString()`'in davranışı (container yerel saatine göre hesapla) bu deploy'da doğru sonucu veriyordu — "devam 22"'deki "Europe/Istanbul bug fix" iddiası yanlıştı, fonksiyon hiçbir zaman gerçekten bozuk değildi (local==UTC olduğu bu deploy'da, eski `toISOString()` versiyonuyla yeni versiyon AYNI sonucu verirdi). `TZ=Europe/Istanbul` eklemek bunun yerine YENİ bir tutarsızlık yaratacaktı (cron İstanbul takvimine göre "dün" hesaplarken, `scheduled_start`/`CURRENT_DATE` UTC takviminde kalacaktı) — bu yüzden `docker-compose.cebi.yml`'e eklenen `TZ` env'i geri alındı, container'a hiç uygulanmadı.
+
+**Yapılan:** `dailyReconciliationScheduler.js` ve `dailyReconciliationScheduler.test.js`'teki yanıltıcı "Europe/Istanbul (UTC+3)" yorumları, gerçek durumu (container UTC, bu bilinçli ve DB ile tutarlı) açıklayacak şekilde düzeltildi. Fonksiyonel kod değişikliği YOK — sadece dokümantasyon/yorum düzeltmesi. ADR-CE-04 değişiklik günlüğüne v5 olarak işlendi.
+
+**Ders:** "Bug bulundum, düzelttim" iddiası, hedef ortamın gerçek konfigürasyonu (container TZ, DB timezone, ilgili kodun geri kalanının kullandığı takvim) doğrulanmadan yapılmamalı — ADR-CE-04 v4'teki orijinal iddia makul görünüyordu (sandbox'ta `date` ile Europe/Istanbul doğrulanmıştı) ama o doğrulama YANLIŞ ortamdaydı (bu session'ın kendi sandbox'ı, production container değil).
+
+---
+
 ## 2026-10-19 (devam 22): ADR-CE-04 sefer-kapanış reconciliation tam implementasyonu
 
 **Cem'in talimatı:** Önceki turda sorulan açık soruya ("planlanan sefer sayısı" nereden gelsin: (A) elle mi, (B) `tasks`'tan otomatik türetim mi) — **"b yi kabul ediyorum."** ADR-CE-04'ün kendi dosyası okununca bu kararın aslında önceki bir oturumda zaten "Onaylandı" (v3) statüsüne tam hibrit model + override yetkisi + audit + exception_events entegrasyonu + çift tetikleyici ile netleşmiş olduğu görüldü — bu turda sadece B seçeneği değil, **ADR'nin v3'teki tam onaylı tasarımı** kodlandı.

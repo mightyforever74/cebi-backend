@@ -19,6 +19,18 @@
  * degisiminin DB/uygulama seviyesinde oturmasi icin makul bir pay.
  * Degerlendirilen gun: bu calistirma anindan ONCEKI takvim gunu ("dun" -
  * gun artik yeni bitti).
+ *
+ * TIMEZONE NOTU (19 Ekim 2026, duzeltildi): "00:10" burada CONTAINER'in
+ * yerel saatine gore - production'da bu UTC (cebi-backend container'inda
+ * TZ set edilmemis, Node varsayilan UTC kullanir). Bu BILINCLI ve DOGRU:
+ * public.tasks.scheduled_start de "ISO, UTC saat" olarak yaziliyor
+ * (routes/internalBridge.js:44) ve dispatcherTasks.js'teki gun filtreleri
+ * de Postgres CURRENT_DATE'e (DB Etc/UTC) dayaniyor - sistemdeki TUM
+ * gun-sinirlari UTC'ye gore. Bu cron'u Europe/Istanbul'a tasimak (TZ env
+ * ile) bu tutarliligi bozar, 3 saatlik bir kayma yaratir. "00:10" yani
+ * UTC gece yarisindan kisa sure sonra, Istanbul saatiyle 03:10'a denk
+ * gelir - bu yanlislik degil, sadece asagidaki yorumlarin ilk yazildigi
+ * halde "yerel saat"i yanlislikla Istanbul sanmis olmasindandi.
  */
 
 const { runEndOfDayReconciliation } = require("./tripReconciliation");
@@ -38,12 +50,16 @@ function msUntilNext(hour, minute, now = new Date()) {
 function yesterdayDateString(now = new Date()) {
   const d = new Date(now);
   d.setDate(d.getDate() - 1);
-  // ONEMLI: toISOString() KULLANILMAZ - o UTC takvim gununu doner, ve bu
-  // cron 00:00-03:00 yerel saat araliginda calistigi icin (Europe/Istanbul,
-  // UTC+3) toISOString() sistematik olarak BIR GUN ERKEN bir tarih
-  // dondururdu (ornegin yerel 18 Ekim 00:10 -> UTC 17 Ekim 21:10 ->
-  // "2026-10-17", yanlis). getFullYear/getMonth/getDate (yerel) kullanilarak
-  // dogru yerel takvim gunu elle insa edilir.
+  // ONEMLI (19 Ekim 2026'da duzeltilen yanlis varsayim): asagidaki satirlar
+  // toISOString() yerine getFullYear/getMonth/getDate kullanir - CONTAINER'in
+  // kendi yerel saatine gore takvim gunu insa eder. Bu production'da UTC'ye
+  // esittir (TZ set edilmemis) ve bu DOGRU DAVRANIS: public.tasks.scheduled_start
+  // de UTC saat olarak yaziliyor (routes/internalBridge.js:44), yani bu
+  // fonksiyonun urettigi tarih string'i scheduled_start'in gun-sinirlariyla
+  // ayni takvimde (UTC) kaliyor. Fonksiyon container'in TZ'sine gore calismaya
+  // devam eder - eger ileride TZ=Europe/Istanbul set edilirse (BUNU YAPMADAN
+  // ONCE scheduled_start/CURRENT_DATE'in de ayni degisikligi almasi gerekir,
+  // aksi halde iki farkli takvim birbirine karisir, bkz. dosya basindaki not).
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
