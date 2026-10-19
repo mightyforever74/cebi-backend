@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-10-19 (devam 22): ADR-CE-04 sefer-kapanış reconciliation tam implementasyonu
+
+**Cem'in talimatı:** Önceki turda sorulan açık soruya ("planlanan sefer sayısı" nereden gelsin: (A) elle mi, (B) `tasks`'tan otomatik türetim mi) — **"b yi kabul ediyorum."** ADR-CE-04'ün kendi dosyası okununca bu kararın aslında önceki bir oturumda zaten "Onaylandı" (v3) statüsüne tam hibrit model + override yetkisi + audit + exception_events entegrasyonu + çift tetikleyici ile netleşmiş olduğu görüldü — bu turda sadece B seçeneği değil, **ADR'nin v3'teki tam onaylı tasarımı** kodlandı.
+
+**1. Migration (`migrations/1785600000000_create-daily-trip-reconciliation.sql`, YENİ):** `public.daily_trip_reconciliation` (`UNIQUE(driver_id, reconciliation_date)`, `status` CHECK `pending|closed_auto|exception_raised`, `planned_count_override` nullable + `override_set_by/at/reason`, `planned_count`/`completed_count` dondurulmuş anlık görüntü, `closed_at`, `exception_event_id` — `enterprise.exception_events` bir TimescaleDB hypertable (bileşik PK `(id, occurred_at)`) olduğu için bilinçli olarak FK DEĞİL, sadece referans) + `public.daily_trip_reconciliation_override_log` (append-only audit: kim/ne zaman/hangi gerekçeyle).
+
+**2. Servis (`services/reconciliation/tripReconciliation.js`, YENİ):** `evaluateDriverDay` — idempotent çekirdek mantık: zaten terminal (`closed_auto`/`exception_raised`) bir satır varsa ham sayım sorgusu bile atılmadan atlanır (yarış durumu güvenliği için UPSERT'ler `WHERE status='pending'` korumalı). Planlanan sayı `public.tasks`'tan (`COALESCE(scheduled_start, created_at)::date` ile "hangi gün" belirlenir — tamamlanma günü değil, planlanan gün) otomatik türetilir, override varsa onu ezer. `reevaluateForTask(client, log, taskId)` — her sefer tamamlamasında çağrılır, SADECE erken otomatik kapanışa bakar (`isEndOfDay:false`, asla exception_events'e yazmaz — gün henüz bitmemiş olabilir). `runEndOfDayReconciliation` — gece yarısı cron'u tarafından çağrılır (`isEndOfDay:true`, tek bu çağrı exception_events'e yazabilir), bir sürücüde hata olsa diğerlerini etkilemez.
+
+**3. Cron (`services/reconciliation/dailyReconciliationScheduler.js`, YENİ):** `dailyTelematicsScheduler.js` ile BİREBİR aynı desen (self-rearming `setTimeout`, DST-güvenli, `node-cron` gibi yeni bağımlılık yok), varsayılan 00:10 yerel. **Bulunan ve düzeltilen gerçek hata:** ilk `yesterdayDateString()` `toISOString()` kullanıyordu — sandbox/prod saat dilimi Europe/Istanbul (UTC+3) olduğundan (`date` + `getTimezoneOffset()=-180` ile doğrulandı), cron'un çalıştığı 00:00-03:00 yerel aralığında bu sistematik olarak BİR GÜN ERKEN bir UTC tarihi döndürüyordu (somut kanıt: `yesterdayDateString(new Date('2026-10-19T00:10:00'))` → yanlışlıkla `"2026-10-17"`, doğrusu `"2026-10-18"`). Düzeltme: `getFullYear()/getMonth()/getDate()` (yerel) ile elle inşa. Regresyon testiyle kilitlendi.
+
+**4. Route (`routes/reconciliation.js`, YENİ):** `GET /api/reconciliation/daily?date=&driverId=` (görüntüleme: `dispatcher`/`company_admin`/`super_admin`), `PUT /api/reconciliation/:driverId/:date/override` (SADECE `company_admin`/`super_admin` — `dispatcher` değiştiremez, ADR'nin caydırıcılık gerekçesiyle tutarlı; `reason` zorunlu, override_log'a yazılır, aynı transaction içinde anında `evaluateDriverDay` tekrar çalıştırılır).
+
+**5. Entegrasyon (`server.js`):** `scheduleDailyReconciliation(fastify)` başlangıçta kuruluyor (`scheduleDailyTelematicsBatch`'in hemen yanında); `routes/reconciliation.js` register edildi; `/api/driver/tasks/:id/complete`'in `COMMIT` sonrası `setImmediate` fire-and-forget bloğuna (mevcut `warmPublicRoute` deseniyle AYNI — ayrı bir `fastify.pg.connect()` client, zaten serbest bırakılmış transaction client'ı KULLANILMAZ, endpoint'in yanıt süresini/başarısını asla etkilemez) `reevaluateForTask` çağrısı eklendi.
+
+**6. Test:** `tests/tripReconciliation.test.js` (10) + `tests/dailyReconciliationScheduler.test.js` (8) — ikisi de `tests/telematicsBatches.test.js`/`dailyTelematicsScheduler.test.js` deseniyle aynı (`fakeClient`/`fakeFastify`, beklenmeyen SQL throw eder). `npm test`: 196/200 geçti, 4 önceden-var-olan ilgisiz hata (`companyBranding`/`publicTrack*`) bu işten bağımsız (daha önceki turlarda `git stash` ile doğrulanmıştı).
+
+**Sonuç:** ADR-CE-04'ün açık sorusu zaten kapanmıştı (v3); bu tur sadece kodladı. ADR'ye değişiklik günlüğü v4 eklendi, §5 implementasyon tamamlandığını belirtecek şekilde güncellendi.
+
+---
+
 ## 2026-10-19 (devam 21): §9.7 OSRM entegrasyonu koda eklendi; CARTO bilinçli olarak ertelendi (Cem onayı)
 
 **Cem'in talimatı:** Build süresini beklerken OSRM/CARTO (§9.7) mimari tasarımına geçildi; vendor/cihaz erişimi gerektirmeyen, tamamen kontrol altındaki iş.

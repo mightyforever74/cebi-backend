@@ -11,6 +11,12 @@ const { checkVehicleQuota } = require("./routes/vehicleQuotaHelpers");
 const {
   scheduleDailyTelematicsBatch,
 } = require("./FEAT-007-EXT-virtual-telematics/06-cron/dailyTelematicsScheduler");
+const {
+  scheduleDailyReconciliation,
+} = require("./services/reconciliation/dailyReconciliationScheduler");
+const {
+  reevaluateForTask,
+} = require("./services/reconciliation/tripReconciliation");
 // 11 Ekim 2026: legacy sunucu-taraflı geofence kontrol fonksiyonu
 // (routes/geofenceCheckHelpers.js) kaldırıldı — bozuk sorgu (var olmayan
 // kolonlar), hiçbir zaman çalışmıyordu (prod geofence_events = 0 satır).
@@ -562,6 +568,7 @@ fastify.register(require("./plugins/etag-cache")); // S6: ETag/304 cache for pol
 fastify.register(require("./routes/geofences")); // Geofence CRUD + edge events
 fastify.register(require("./routes/reports")); // Operations Report
 fastify.register(require("./routes/weighbridge")); // Weighbridge Operations (Faz 1 §3/§8.4/§9.5, ADR-CE-04)
+fastify.register(require("./routes/reconciliation")); // Sefer Kapanış Reconciliation (ADR-CE-04 §2-B/§B.1)
 fastify.register(require("./routes/mobileTelemetry")); // Mobil Telemetri batch ingestion (ADR-CE-01/ADR-CE-02)
 
 // ── Dispatcher Faz A: Çekirdek Operasyon (tasks/drivers/vehicles/locations) ──
@@ -5704,6 +5711,26 @@ fastify.put(
 
       await revokePublicTrackingBestEffort(client, id, request.log);
       await client.query("COMMIT");
+      // ADR-CE-04 §B.3(i) — sefer "completed" olunca erken otomatik kapanış
+      // kontrolü (tamamlanan >= planlanan ise gün hemen kapanır). Ayrı bir
+      // DB client ile, commit SONRASI, fire-and-forget: reconciliation'ın
+      // kendisi ASLA bu endpoint'in başarısını/yanıt süresini etkilememeli
+      // (aynı warmPublicRoute deseni, yukarıda /start handler'ında).
+      setImmediate(() => {
+        fastify.pg
+          .connect()
+          .then((reconClient) =>
+            reevaluateForTask(reconClient, request.log, id).finally(() =>
+              reconClient.release()
+            )
+          )
+          .catch((err) => {
+            request.log.error(
+              { err, taskId: id },
+              "[ADR-CE-04] reconciliation client baglantisi basarisiz (yok sayildi)"
+            );
+          });
+      });
       return { success: true, task: rows[0] };
     } catch (error) {
       await client.query("ROLLBACK");
@@ -6557,6 +6584,12 @@ const start = async () => {
     // otomatik zamanlama (Cem'in kararı). Her gün 02:00'da fuelSnapshotBatch
     // -> reconcileBatch -> correlationBatch sırayla çalışır.
     scheduleDailyTelematicsBatch(fastify);
+
+    // ADR-CE-04 §B.3(ii) — gün sonu (00:10, yerel saat) sefer kapanış
+    // reconciliation güvenlik-ağı cron'u. Erken kapanış tetikleyicisi
+    // (sefer "completed" olduğunda) /api/driver/tasks/:id/complete
+    // handler'ına bağlı (bkz. reevaluateForTask çağrısı, aşağıda).
+    scheduleDailyReconciliation(fastify);
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);
