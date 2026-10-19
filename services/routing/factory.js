@@ -8,6 +8,7 @@
  */
 
 const HereRoutingProvider = require("./HereRoutingProvider");
+const OsrmRoutingProvider = require("./OsrmRoutingProvider");
 
 /**
  * @returns {import("./contract").IRoutingProvider}
@@ -18,9 +19,11 @@ function createProvider() {
   switch (providerType) {
     case "here":
       return new HereRoutingProvider();
+    case "osrm":
+      return new OsrmRoutingProvider();
     default:
       throw new Error(
-        "Unknown ROUTING_PROVIDER: '" + providerType + "' (expected 'here')"
+        "Unknown ROUTING_PROVIDER: '" + providerType + "' (expected 'here' or 'osrm')"
       );
   }
 }

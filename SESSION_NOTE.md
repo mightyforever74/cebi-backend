@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-10-19 (devam 21): §9.7 OSRM entegrasyonu koda eklendi; CARTO için Cem'in kararı bekleniyor
+
+**Cem'in talimatı:** Build süresini beklerken OSRM/CARTO (§9.7) mimari tasarımına geçildi; vendor/cihaz erişimi gerektirmeyen, tamamen kontrol altındaki iş.
+
+**1. Önce doğrulama (kod yazmadan önce):** 4 repo'da ("core", cebi-backend, cebi-dispatcher, cebi-mobile) OSRM/CARTO referansları tarandı. Bulgu: OSRM sadece `cebi-dispatcher/scripts/gen-routes.js` + `sim-portxl.js`'te bir kerelik demo-veri üretimi için PUBLIC OSRM demo server'ını çağırıyor, runtime provider yok. CARTO ise `cebi-dispatcher`'da SADECE frontend Leaflet basemap-tile URL'i olarak canlı (`basemaps.cartocdn.com`, `tokens.ts`/`TourPlanningMap.tsx`/`LiveFleetMap.tsx`), backend/API rolü sıfır. **Bu, Cem'in tarif ettiği "backend geospatial analytics/visualization abstraction (mock/stub)" `CartoGeoProvider.js` planıyla örtüşmüyor** — hiçbir repoda böyle bir kullanım için somut bir referans yok.
+
+**2. OSRM — koda eklendi (`services/routing/OsrmRoutingProvider.js`, YENİ):** `IRoutingProvider` kontratına uygun (ADR-0014), `HereRoutingProvider.js` deseniyle aynı şekil. `computeRoute` (OSRM Route service, `geometries=geojson`, çıktı `[lat,lon]`'a çevrilir), `computeMatrix` (OSRM Table service — ilk kez implemente edildi, şu an hiçbir caller yok, VRP çoklu-nokta matrisi için hazır altyapı), `buildTrafficPayload` (daima `status_code:"clear"`/`delay_min:0` — DÜRÜST temsil, OSRM'de canlı trafik verisi yok, sahte değer üretilmedi). `OSRM_BASE_URL`/`OSRM_PROFILE` ZORUNLU, boşsa throw (HERE_API_KEY ile aynı desen) — public demo server'a sessizce düşmüyor. Kamyon kısıtlamaları (yükseklik/ağırlık/hazmat tünel) sadece Cem'in kendi özel `.lua` profiliyle on-işlenmiş self-hosted kurulumda çalışır, stok `car.lua` bunu UYGULAMAZ — dosya başlığında açıkça belgelendi.
+- `factory.js`: `case "osrm":` eklendi.
+- `tests/osrmRoutingProvider.test.js` (YENİ): 5 test (geometri dönüşümü, OSRM hata kodu throw, `OSRM_BASE_URL` eksikse throw, matrix başarı, matrix <2 nokta reddi). `npm test`: 5/5 yeni test geçti; repodaki 4 önceden-var-olan ilgisiz test hatası (companyBranding/publicTrack*) `git stash` ile izole edilip bu değişiklikten bağımsız olduğu doğrulandı.
+- `cebi.env.example`: `OSRM_BASE_URL`/`OSRM_PROFILE`/`OSRM_TIMEOUT_MS` dokümante edildi.
+- `docker-compose.osrm.yml` (YENİ): self-hosted OSRM için iskelet (osrm/osrm-backend, MLD algoritması, `--profile prep` ile bir kerelik extract/partition/customize). Bu sandbox gerçek OSM verisi indiremediği için SADECE şablon — Cem'in kendi sunucusunda harita verisini indirip çalıştırması gerekiyor (dosya başlığında adım adım).
+
+**3. CARTO — kod YAZILMADI, Cem'in kararı bekleniyor:** yukarıdaki bulgu nedeniyle (madde 1), somut bir backend kullanım senaryosu netleşmeden spekülatif bir `CartoGeoProvider.js` eklemek "kanıt-önce" ilkesine aykırı olur. Cem'e sorulması gereken: hangi "katman/vektör veri" backend'de işlenecek (örn. CARTO'nun kendi spatial SQL API'si mi, yoksa frontend'deki basemap kullanımının ötesinde başka bir CARTO ürünü mü), yoksa bu madde CARTO hesabı açılana kadar ertelensin mi.
+
+---
+
 ## 2026-10-19 (devam 20): Ana tulipfleet CI fix, Risk #14 tam kapanışı, Risk #15 doğrulaması, ADR-CE-02 §4.2 (arka plan GPS)
 
 **Cem'in talimatı:** Önce ana `tulipfleet` uygulamasının Play Console targetSdk-36 uyarısını düzelt, sonra Risk #14'e (cebi-mobile credential ayrışması) geç, sonra ADR-CE-02 §4.2'ye (gerçek arka plan GPS) başla.

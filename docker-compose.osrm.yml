@@ -1,0 +1,86 @@
+# Self-hosted OSRM (Open Source Routing Machine) — §9.7, bkz.
+# services/routing/OsrmRoutingProvider.js başlık yorumu.
+#
+# ADR-CE-03 "Bağımsız Çalışma Zamanı" ile aynı izolasyon deseni:
+# ayrı network (cebi-net'e bağımlı değil, osrm-net), loopback-only port
+# binding, ana projeyle hiçbir ortak kaynak yok.
+#
+# ÖNEMLİ — bu sandbox'ta GERÇEK OSM harita verisi indirilip işlenemez
+# (ağ erişimi policy ile kısıtlı, bkz. README.md __agentproxy notu); bu
+# dosya SADECE iskelet/kurulum şablonudur. Cem'in kendi sunucusunda 2
+# adımda çalıştırması gerekir:
+#
+#   1) Harita verisini indir (ör. Türkiye/bölge .osm.pbf, Geofabrik'ten:
+#      https://download.geofabrik.de/europe/turkey.html) ve bu dosyayla
+#      aynı dizindeki ./osrm-data/ klasörüne koy.
+#
+#   2) Ön-işleme (extract + partition + customize, MLD algoritması —
+#      osrm-backend'in güncel önerdiği, osrm-contract/CH'den daha esnek):
+#
+#        docker compose -f docker-compose.osrm.yml --profile prep run --rm osrm-prep
+#
+#      BU ADIM, KAMYON KISITLAMALARININ (yükseklik/ağırlık/ADR-hazmat
+#      tünel kategorisi) UYGULANIP UYGULANMAYACAĞINI BELİRLER:
+#      varsayılan olarak osrm-backend image'indeki stok `car.lua` profili
+#      kullanılır (kamyon kısıtlaması YOK). Gerçek kamyon-güvenli rota
+#      isteniyorsa Cem'in kendi özel profilini (ör. `truck.lua`, resmi
+#      osrm-backend reposundaki car.lua'dan türetilmiş, ağırlık/yükseklik
+#      sınırlarını reddeden) ./osrm-profiles/ altına koyup PROFILE_FILE
+#      değişkenini ona göre değiştirmesi gerekir (aşağıda işaretli).
+#
+#   3) Servisi başlat: docker compose -f docker-compose.osrm.yml up -d osrm
+#
+#   4) cebi.env'de: OSRM_BASE_URL=http://<bu-sunucu>:5100,
+#      OSRM_PROFILE=<PROFILE_FILE ile aynı isim, uzantısız>
+#
+# PUBLIC demo server (router.project-osrm.org) PRODUCTION'DA KULLANILMAZ
+# (rate limit, SLA yok, ticari kullanım koşulları uygun değil) — sadece
+# cebi-dispatcher/scripts/gen-routes.js gibi bir kerelik demo-veri
+# scriptlerinde kullanılması kabul edilebilir, runtime provider'da DEĞİL.
+
+networks:
+  osrm-net:
+    name: osrm-net
+    driver: bridge
+
+services:
+  # Bir kerelik ön-işleme; normalde kapalı durur (profiles: ["prep"]
+  # sayesinde `docker compose up` ona dokunmaz, sadece elle
+  # `--profile prep run --rm osrm-prep` ile tetiklenir).
+  osrm-prep:
+    image: osrm/osrm-backend:latest
+    container_name: cebi-osrm-prep
+    profiles: ["prep"]
+    networks:
+      - osrm-net
+    volumes:
+      - ./osrm-data:/data
+      - ./osrm-profiles:/profiles
+    # PROFILE_FILE: stok car.lua (kamyon kısıtlaması yok) veya Cem'in
+    # kendi ./osrm-profiles/truck.lua dosyası — yukarıdaki not'a bakın.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >
+        set -e &&
+        PBF=$$(ls /data/*.osm.pbf | head -n1) &&
+        PROFILE_FILE=$${PROFILE_FILE:-/opt/car.lua} &&
+        osrm-extract -p "$$PROFILE_FILE" "$$PBF" &&
+        osrm-partition "$${PBF%.osm.pbf}.osrm" &&
+        osrm-customize "$${PBF%.osm.pbf}.osrm"
+
+  osrm:
+    image: osrm/osrm-backend:latest
+    container_name: cebi-osrm
+    restart: unless-stopped
+    networks:
+      - osrm-net
+    volumes:
+      - ./osrm-data:/data
+    command: >
+      osrm-routed --algorithm mld --max-table-size 10000 /data/turkey-latest.osrm
+    ports:
+      # Loopback-only, dış erişime hiç açılmaz — cebi-backend ile aynı
+      # desen (bkz. docker-compose.cebi.yml). cebi-backend bu sunucuya
+      # (veya network içindeyse osrm-net üzerinden "osrm:5000" ile)
+      # OSRM_BASE_URL ile bağlanır.
+      - "127.0.0.1:5100:5000"
