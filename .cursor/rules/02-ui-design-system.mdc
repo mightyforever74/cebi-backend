@@ -1,0 +1,10 @@
+---
+description: Frontend design taste, UI patterns, and anti-slop rules
+globs: apps/cebi-dispatcher/**/*
+alwaysApply: false
+---
+# Frontend & UI Guidelines
+
+- **NO AI TELLS:** Avoid generic purple gradients, default Inter font, equal 3-card rows, and placeholder text like "John Doe" or "Seamless".
+- **ACCESSIBILITY & CONTRAST:** Ensure WCAG AA contrast for text, buttons, and form controls.
+- **LAYOUT & SPACING:** Avoid `h-screen`; use `min-h-[100dvh]` to prevent mobile jumping.
