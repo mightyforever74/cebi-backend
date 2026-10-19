@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-10-19 (devam 17) — Faz A-2: Dispatcher VRP Optimizasyon Portu (kod seviyesinde — henüz sunucuda deploy/test edilmedi)
+
+**Cem'in talimatı (birebir):** "Faz A-2'ye (VRP optimizasyon portu) geçelim."
+
+**Kapsam:** Dispatcher Faz A'da ("Çekirdek Operasyon") kasıtlı olarak dışarıda bırakılan `POST /dispatcher/tasks/optimize` → `GET /dispatcher/tasks/optimize/poll/:id` → `POST /dispatcher/tasks/optimize/approve` zinciri (VRP/çoklu-görev optimizasyon akışı) `tulipfleet-enterprise-backend/routes/tasks.js`'ten port edildi. Faz A'nın bu zinciri dışarıda bırakmasının iki mimari nedeni vardı, ikisi de bu turda çözüldü:
+
+1. **VRP sağlayıcı soyutlaması yoktu.** Çözüm: `lib/geoDistance.js` (haversine, paylaşılabilir export), `lib/routing/vrpFactory.js` (`getVrpProvider()`, env `VRP_PROVIDER` — cebi-backend'in mevcut tekil-rota `services/routing/factory.js`/`ROUTING_PROVIDER`'ından **kasıtlı olarak ayrı isim**, iki farklı sorun uzayı), `lib/routing/MockVrpProvider.js` (kaynağın `MockRoutingProvider`'ının birebir portu — kaynakta da bu, production'da GERÇEKTEN çalışan davranış, "here-tour" hiçbir ortamda varsayılan değil). Kasıtlı olarak port edilmedi: `simulateHereProblem()`/`here_problem` alanı (grep ile doğrulandı: `cebi-dispatcher` frontend'i bu alanı hiç okumuyor, kozmetik simülasyon) ve gerçek `HereTourPlanningProvider` (takip işi: "Faz A-3").
+2. **`internalBridge.js`'in eski HTTP self-push deseni** (axios + `INTERNAL_CORE_API_URL` + `X-Internal-Bridge-Token`) cebi-backend'in tekil-süreçli monolit mimarisine uymuyordu. Çözüm: `routes/internalBridge.js`'teki transaction mantığı `createBridgedTask(fastify, payload, trxClient?)` olarak çıkarıldı, eski HTTP route artık bu fonksiyonu çağıran ince bir wrapper. Approve orkestratörü artık bunu **in-process, kendi per-draft transaction client'ıyla** çağırıyor — bu, kaynakta mimari olarak mümkün olmayan gerçek bir atomiklik kazancı sağladı: `dispatch_tasks` durumu "assigned" + köprünün `tasks` INSERT'i artık AYNI transaction'da (kaynakta bunlar zorunlu olarak iki ayrı süreç/transaction'dı — kaynağın kendi "BUG-2" yorumu bu atomikliğin istendiğini ama o mimaride mümkün olmadığını ima ediyordu).
+
+**Yazılan/değiştirilen dosyalar:**
+- `lib/geoDistance.js` (YENİ) — `haversineMeters()`.
+- `lib/routing/vrpFactory.js` (YENİ), `lib/routing/MockVrpProvider.js` (YENİ).
+- `routes/internalBridge.js` (DEĞİŞTİ) — `createBridgedTask()` çıkarıldı + export edildi, eski route ince wrapper oldu, güvenlik `onRequest` hook'una (IP allowlist/token) dokunulmadı (sadece HTTP route'u korur, in-process çağrı zaten bu sınırı hiç geçmiyor — kasıtlı).
+- `routes/dispatcherTasks.js` (DEĞİŞTİ) — üç yeni route eklendi (`optimize`/`poll/:id`/`approve`, hepsi `/api` öneki OLMADAN — kaynağın kendi tutarsızlığı, `cebi-dispatcher/src/hooks/useTaskOptimization.ts`'e sabit kodlu olduğu için birebir korunuyor). `estimateDriveSeconds()` cebi-backend'in KENDİ `services/routing/factory.js`/`HereRoutingProvider.computeRoute()`'unu reuse ediyor (yeni axios/HTTP çağrısı YOK); HERE yoksa/hata verirse haversine @ 40km/h + %15 buffer fallback (kaynakla birebir aynı sözleşme).
+- `server.js` — 567-570 civarı eski "VRP zinciri bu pasta dışında" yorumu güncellendi.
+- `cebi.env.example` — `VRP_PROVIDER=mock` (opsiyonel, varsayılan mock) dokümante edildi.
+- `scripts/dev/cebi_dispatcher_faza2_vrp_e2e_test.sh` (YENİ) — rol gate, optimize→poll→approve (manuel araç ataması + zaman penceresi), çapraz-şirket araç sızıntısı kontrolü, kasıtlı 409 çakışma senaryosu + `override:true` ile tekrar deneme, hepsi DB satır doğrulamasıyla.
+
+**Şema doğrulaması (migrations/1778687553584_enterprise-schema-init.sql'den okunarak, tahmin edilmeden):** `enterprise.routing_jobs.status` CHECK (`submitted|running|completed|failed`), `enterprise.dispatch_tasks.status` CHECK (`draft|planned|assigned|in_progress|completed|failed|cancelled`), `assigned_vehicle_id`/`assigned_driver_id`/`pickup_location`/`dropoff_location`/`capacity_required`/`skill_required`/`routing_job_id` kolonları — hepsi koddaki kullanımla eşleşiyor. `routing_jobs.request_hash` UNIQUE index'i (`WHERE status='completed'`) provider/company scope'suz — kaynaktaki gibi hash'e `::mock` eklenerek korunuyor.
+
+**Henüz yapılmadı:** `node -c` ile tüm değiştirilen/yeni dosyalar sentaks kontrolünden geçti (bu turda), ama canlıda (`fleet-enterprise-01`) henüz deploy/test edilmedi — bu, bir sonraki adım, önceki tüm özelliklerle (Weighbridge, Mobil Telemetri, Dispatcher Faz A/deploy) aynı desen: `git pull` + rebuild + commit'li e2e script çalıştırma, Cem'in sunucu erişimiyle.
+
+---
+
 ## 2026-10-19 (devam 16) — cebi-dispatcher canlı domain'inden uçtan uca doğrulama: CORS/JWT/dispatcher endpoint'leri
 
 **Cem'in talebi:** `admin@cebi-test.local`/`admin2@cebi-test.local` ile `https://cebi-dispatcher.tulipfleet.com`'dan giriş + `/api/dispatcher/*` çağrılarının tarayıcı tabanlı (CORS dahil) uçtan uca test edilmesi.

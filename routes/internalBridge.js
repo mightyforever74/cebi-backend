@@ -19,6 +19,27 @@
  * veriyi zaten kullaniyordu). Mobil admin gorevlerinde title dolu gelir ->
  * fallback devreye girmez. Varchar zirhi: 255'e kirpilir.
  *
+ * FAZ A-2 (2026-10-19, VRP Optimizasyon Portu): Bu dosyanın ana transaction
+ * mantığı `createBridgedTask(fastify, payload, trxClient?)` olarak çıkarıldı
+ * ve export edildi. HTTP route (`POST /api/internal/bridge/tasks`) artık bu
+ * fonksiyonun ince bir wrapper'ı — kaynaktaki (tulipfleet-enterprise-backend)
+ * mimaride bu köprü axios + HTTP ile ayrı bir SÜRECE (core backend) push
+ * ediliyordu; cebi-backend tek süreçli bir Modular Monolith olduğu için
+ * (ADR-CE-03) `routes/dispatcherTasks.js`'teki `/optimize/approve`
+ * orkestratörü bu fonksiyonu DOĞRUDAN, HTTP self-call OLMADAN çağırır —
+ * `INTERNAL_CORE_API_URL`/`INTERNAL_BRIDGE_TOKEN` bu çağrı için hiç
+ * gerekmez (sadece HTTP route'un KENDİ dış-sınır güvenlik kontrolü için
+ * kullanılır, aşağıdaki onRequest hook'u değişmedi).
+ * `trxClient` geçirilirse (approve'un per-draft transaction'ı), fonksiyon
+ * KENDİ BEGIN/COMMIT/ROLLBACK'ini YAPMAZ — transaction sınırı çağıranındır;
+ * bu, "assigned işareti + köprü INSERT'i aynı atomik transaction'da" hale
+ * getirir (kaynaktaki BUG-2 yorumunun özlemini duyduğu ama iki ayrı süreç
+ * olduğu için mimari olarak mümkün olmayan şey — tek süreçli mimarinin
+ * sağladığı gerçek bir iyileştirme). Push bildirimi her zaman bir
+ * `firePush` callback'i olarak döner, HİÇBİR ZAMAN burada otomatik
+ * ateşlenmez — çağıran, kendi COMMIT'i kesinleşince çağırır (MockVrpProvider.
+ * submitVrp'nin `triggerBackground` deseniyle aynı disiplin).
+ *
  * BUG-1 Spec v3 Faz A+B (2026-08-02): Zaman penceresi zinciri + overlap 409.
  * - Payload'a scheduled_start / scheduled_end (ISO, UTC saat — DB kolonlari
  *   timestamp WITHOUT tz, DB Etc/UTC kanitli) + override (bool) eklendi.
@@ -181,6 +202,199 @@ async function requestDelayReasonPush(fastify, payload) {
   return { ok: true };
 }
 
+/**
+ * createBridgedTask — atomik ince köprü girişi (Faz A-2 portu, bkz. dosya
+ * başlığı). `trxClient` verilirse transaction sınırını YÖNETMEZ (çağıranın
+ * işi) ve push'u ASLA otomatik ateşlemez — her zaman bir `firePush`
+ * callback'i döner, çağıran kendi COMMIT'i kesinleşince çağırır.
+ *
+ * @param {{pg:Object, log:Object}} fastify
+ * @param {Object} payload - HTTP route'un eski request.body'siyle AYNI şekil
+ * @param {Object} [trxClient] - Opsiyonel aktif transaction client (approve'un per-draft trx'i)
+ * @returns {Promise<{status:201|400|409, body:Object, firePush:(Function|null)}>}
+ */
+async function createBridgedTask(fastify, payload, trxClient = null) {
+  const {
+    enterprise_dispatch_task_id,
+    company_id,
+    user_id, // Enterprise'dan gelen assigned_driver_id (users.id)
+    vehicle_id,
+    title,
+    description,
+    start_location_str, // Sözleşme gereği düz varchar(255) string metin
+    end_location_str, // Sözleşme gereği düz varchar(255) string metin
+    priority,
+    scheduled_start,
+    scheduled_end,
+    override,
+    created_by_user_id,
+  } = payload || {};
+
+  if (!company_id || !start_location_str || !end_location_str) {
+    return {
+      status: 400,
+      body: {
+        error: "Bad Request",
+        message: "Missing mandatory thin bridge contract payload attributes.",
+      },
+      firePush: null,
+    };
+  }
+
+  // A2 (2026-07-22): Dispatcher title gondermez -> adreslerden okunabilir
+  // baslik turet. Mobil gorevlerde title dolu -> fallback devreye girmez.
+  const derivedTitle = (
+    title || `${start_location_str} → ${end_location_str}`
+  ).slice(0, 255);
+
+  const ownClient = trxClient == null;
+  const client = trxClient || (await fastify.pg.connect());
+
+  try {
+    if (ownClient) await client.query("BEGIN");
+
+    // ── BUG-1 Faz B: CAKISMA DENETIMI (numaratorden ONCE — 409'da sayac yanmaz) ──
+    let conflictMetadata = null;
+    if (vehicle_id && scheduled_start && scheduled_end) {
+      const { rows: confRows } = await client.query(
+        `SELECT task_no,
+                ROUND(EXTRACT(EPOCH FROM (
+                  LEAST(scheduled_end, $3::timestamp) -
+                  GREATEST(scheduled_start, $2::timestamp)
+                )) / 60.0)::int AS overlap_minutes
+         FROM tasks
+         WHERE vehicle_id = $1
+           AND status IN ('assigned','accepted','in_progress','pending_review')
+           AND scheduled_start IS NOT NULL
+           AND scheduled_end IS NOT NULL
+           AND tsrange(scheduled_start, scheduled_end) &&
+               tsrange($2::timestamp, $3::timestamp)
+         ORDER BY scheduled_start ASC
+         LIMIT 1`,
+        [vehicle_id, scheduled_start, scheduled_end]
+      );
+      if (confRows.length > 0) {
+        conflictMetadata = {
+          conflicting_task_no: confRows[0].task_no,
+          overlap_minutes: confRows[0].overlap_minutes,
+        };
+        if (!override) {
+          if (ownClient) await client.query("ROLLBACK");
+          fastify.log.warn(
+            { vehicle_id, conflictMetadata },
+            "[BridgeOverlapBlocked] Zaman penceresi cakismasi — 409"
+          );
+          return {
+            status: 409,
+            body: {
+              error: "Conflict",
+              message: `Bu araca belirtilen aralıkta atanmış görev var (${conflictMetadata.conflicting_task_no}, çakışma ~${conflictMetadata.overlap_minutes} dk).`,
+              conflict_metadata: conflictMetadata,
+            },
+            firePush: null,
+          };
+        }
+        fastify.log.info(
+          { vehicle_id, conflictMetadata },
+          "[BridgeOverlapOverride] Cakisma override ile gecildi (Gerekceli Onay)"
+        );
+      }
+    }
+
+    // Sürücü Profil Kimliği Çeviri İstasyonu (users.id -> drivers.id)
+    let driver_id = null;
+    if (user_id) {
+      const { rows: drvRows } = await client.query(
+        "SELECT id FROM drivers WHERE user_id = $1 LIMIT 1",
+        [user_id]
+      );
+      driver_id = drvRows[0]?.id || null;
+    }
+
+    const { rows: companyRows } = await client.query(
+      "SELECT code FROM companies WHERE id = $1 LIMIT 1",
+      [company_id]
+    );
+    const companyCode = companyRows[0]?.code || "TLP";
+    const year = new Date().getFullYear() % 100;
+
+    const { rows: counterRows } = await client.query(
+      `INSERT INTO company_task_counters (company_id, year, last_number)
+       VALUES ($1, $2, 1)
+       ON CONFLICT (company_id, year)
+       DO UPDATE SET last_number = company_task_counters.last_number + 1, updated_at = NOW()
+       RETURNING last_number`,
+      [company_id, 2000 + year]
+    );
+
+    const taskNumber = counterRows[0].last_number;
+    const task_no = `${companyCode}-${year}-${String(taskNumber).padStart(5, "0")}`;
+
+    const { rows: insertedTask } = await client.query(
+      `INSERT INTO tasks (
+        id, task_no, driver_id, vehicle_id, title, description,
+        start_location, end_location, priority, status, company_id,
+        enterprise_dispatch_task_id, scheduled_start, scheduled_end,
+        created_by, created_at, updated_at, distance_source
+       ) VALUES (
+        gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, 'assigned', $9, $10,
+        $11::timestamp, $12::timestamp, $13, NOW(), NOW(), 'manual'
+       ) RETURNING id, task_no`,
+      [
+        task_no,
+        driver_id,
+        vehicle_id,
+        derivedTitle,
+        description == null ? null : description,
+        start_location_str.slice(0, 255),
+        end_location_str.slice(0, 255),
+        priority || "normal",
+        company_id,
+        enterprise_dispatch_task_id,
+        scheduled_start || null,
+        scheduled_end || null,
+        created_by_user_id || null,
+      ]
+    );
+
+    if (ownClient) await client.query("COMMIT");
+
+    // Push, HİÇBİR ZAMAN burada ateşlenmez — her zaman callback olarak
+    // döner. Çağıran (HTTP wrapper veya approve orkestratörü) kendi
+    // COMMIT'i kesinleşince çağırır.
+    const firePush = user_id
+      ? () => {
+          sendPushNotification(fastify, {
+            userId: user_id,
+            templateKey: "taskAssigned",
+            vars: {
+              taskNo: task_no,
+              startLabel: start_location_str,
+              endLabel: end_location_str,
+            },
+            data: { taskNo: insertedTask[0].task_no, taskId: insertedTask[0].id },
+          }).catch(() => {});
+        }
+      : null;
+
+    return {
+      status: 201,
+      body: {
+        success: true,
+        taskId: insertedTask[0].id,
+        taskNo: insertedTask[0].task_no,
+        conflict_metadata: conflictMetadata,
+      },
+      firePush,
+    };
+  } catch (err) {
+    if (ownClient) await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    if (ownClient) client.release();
+  }
+}
+
 async function internalBridgeRoutes(fastify) {
   // 1. GÜVENLİK FİLTRESİ: IP Allowlist ve FAIL-CLOSED Token Denetimi
   fastify.addHook("onRequest", async (request, reply) => {
@@ -234,193 +448,21 @@ async function internalBridgeRoutes(fastify) {
     }
   });
 
-  // 2. ATOMİK İNCE KÖPRÜ GİRİŞİ
+  // 2. ATOMİK İNCE KÖPRÜ GİRİŞİ (HTTP route — dış sınır, ince wrapper)
   fastify.post("/api/internal/bridge/tasks", async (request, reply) => {
-    const client = await fastify.pg.connect();
-
     try {
-      const {
-        enterprise_dispatch_task_id,
-        company_id,
-        user_id, // Enterprise'dan gelen assigned_driver_id (users.id)
-        vehicle_id,
-        title,
-        description,
-        start_location_str, // SORUN 3 ÇÖZÜMÜ: Sözleşme gereği düz varchar(255) string metin gelir
-        end_location_str, // SORUN 3 ÇÖZÜMÜ: Sözleşme gereği düz varchar(255) string metin gelir
-        priority,
-        // BUG-1 Faz A: zaman penceresi zinciri (ISO string, UTC saat)
-        scheduled_start,
-        scheduled_end,
-        // BUG-1 Faz C on-hazirligi: Mode 1 "Gerekceli Onay" bayragi
-        override,
-        created_by_user_id,
-      } = request.body;
-
-      if (!company_id || !start_location_str || !end_location_str) {
-        return reply
-          .status(400)
-          .send({
-            error: "Bad Request",
-            message:
-              "Missing mandatory thin bridge contract payload attributes.",
-          });
-      }
-
-      // A2 (2026-07-22): Dispatcher title gondermez -> adreslerden okunabilir
-      // baslik turet. Mobil gorevlerde title dolu -> fallback devreye girmez.
-      const derivedTitle = (
-        title || `${start_location_str} → ${end_location_str}`
-      ).slice(0, 255);
-
-      // SORUN 2 ÇÖZÜMÜ: Numaratör ve INSERT adımları tek bir atomik PostgreSQL Transaction zırhına alınır!
-      await client.query("BEGIN");
-
-      // ── BUG-1 Faz B: CAKISMA DENETIMI (numaratorden ONCE — 409'da sayac yanmaz) ──
-      // Yalniz her iki pencere de doluysa kosulur (karar 2b: NULL'lar muaf).
-      let conflictMetadata = null;
-      if (vehicle_id && scheduled_start && scheduled_end) {
-        const { rows: confRows } = await client.query(
-          `SELECT task_no,
-                  ROUND(EXTRACT(EPOCH FROM (
-                    LEAST(scheduled_end, $3::timestamp) -
-                    GREATEST(scheduled_start, $2::timestamp)
-                  )) / 60.0)::int AS overlap_minutes
-           FROM tasks
-           WHERE vehicle_id = $1
-             AND status IN ('assigned','accepted','in_progress','pending_review')
-             AND scheduled_start IS NOT NULL
-             AND scheduled_end IS NOT NULL
-             AND tsrange(scheduled_start, scheduled_end) &&
-                 tsrange($2::timestamp, $3::timestamp)
-           ORDER BY scheduled_start ASC
-           LIMIT 1`,
-          [vehicle_id, scheduled_start, scheduled_end]
-        );
-        if (confRows.length > 0) {
-          conflictMetadata = {
-            conflicting_task_no: confRows[0].task_no,
-            overlap_minutes: confRows[0].overlap_minutes,
-          };
-          if (!override) {
-            await client.query("ROLLBACK");
-            fastify.log.warn(
-              { vehicle_id, conflictMetadata },
-              "[BridgeOverlapBlocked] Zaman penceresi cakismasi — 409"
-            );
-            return reply.status(409).send({
-              error: "Conflict",
-              message: `Bu araca belirtilen aralıkta atanmış görev var (${conflictMetadata.conflicting_task_no}, çakışma ~${conflictMetadata.overlap_minutes} dk).`,
-              conflict_metadata: conflictMetadata,
-            });
-          }
-          // override=true: Mode 1 Advisory — insan kurali deldi; metadata
-          // yanitla doner, FN-18 karar loguna muhurlenmesi cagiranin isi (Faz C).
-          fastify.log.info(
-            { vehicle_id, conflictMetadata },
-            "[BridgeOverlapOverride] Cakisma override ile gecildi (Gerekceli Onay)"
-          );
-        }
-      }
-
-      // Sürücü Profil Kimliği Çeviri İstasyonu (users.id -> drivers.id)
-      let driver_id = null;
-      if (user_id) {
-        const { rows: drvRows } = await client.query(
-          "SELECT id FROM drivers WHERE user_id = $1 LIMIT 1",
-          [user_id]
-        );
-        driver_id = drvRows[0]?.id || null;
-      }
-
-      // Canlı Kod Satır 2262-2265 Gerçeği: Kolon adı 'code', fallback 'TLP'
-      const { rows: companyRows } = await client.query(
-        "SELECT code FROM companies WHERE id = $1 LIMIT 1",
-        [company_id]
-      );
-      const companyCode = companyRows[0]?.code || "TLP";
-      const year = new Date().getFullYear() % 100; // 26
-
-      // Canlı Kod Satır 2270-2274 Gerçeği: Atomik Numaratör Artırımı
-      const { rows: counterRows } = await client.query(
-        `INSERT INTO company_task_counters (company_id, year, last_number)
-         VALUES ($1, $2, 1)
-         ON CONFLICT (company_id, year)
-         DO UPDATE SET last_number = company_task_counters.last_number + 1, updated_at = NOW()
-         RETURNING last_number`,
-        [company_id, 2000 + year]
-      );
-
-      const taskNumber = counterRows[0].last_number;
-      const task_no = `${companyCode}-${year}-${String(taskNumber).padStart(
-        5,
-        "0"
-      )}`;
-
-      // Güvenli public.tasks INSERT işlemi (Varchar veri tipi uyuşmazlığı tamamen çözüldü)
-      // BUG-1 Faz A: scheduled_start/end artik MUHURLENIR (null-safe — pencere
-      // gelmezse NULL kalir, overlap denetimi de zaten kosulmamis olur).
-      const { rows: insertedTask } = await client.query(
-        `INSERT INTO tasks (
-          id, task_no, driver_id, vehicle_id, title, description, 
-          start_location, end_location, priority, status, company_id, 
-          enterprise_dispatch_task_id, scheduled_start, scheduled_end,
-          created_by, created_at, updated_at, distance_source
-         ) VALUES (
-          gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, 'assigned', $9, $10,
-          $11::timestamp, $12::timestamp, $13, NOW(), NOW(), 'manual'
-         ) RETURNING id, task_no`,
-        [
-          task_no,
-          driver_id,
-          vehicle_id,
-          derivedTitle,
-          description == null ? null : description,
-          start_location_str.slice(0, 255), // Varchar(255) kırpma zırhı
-          end_location_str.slice(0, 255), // Varchar(255) kırpma zırhı
-          priority || "normal",
-          company_id,
-          enterprise_dispatch_task_id,
-          scheduled_start || null,
-          scheduled_end || null,
-          created_by_user_id || null,
-        ]
-      );
-
-      await client.query("COMMIT"); // TÜM İŞLEMLERİ ATOMİK OLARAK VERİTABANINA KİLİTLE!
-
-      // FIX (2026-07-18): Push bildirimi - COMMIT SONRASI, best-effort, no-throw.
-      // Transaction'a dahil degil, basarisiz olursa task olusturma etkilenmez.
-      if (user_id) {
-        sendPushNotification(fastify, {
-          userId: user_id,
-          templateKey: "taskAssigned",
-          vars: { taskNo: task_no, startLabel: start_location_str, endLabel: end_location_str },
-          data: { taskNo: insertedTask[0].task_no, taskId: insertedTask[0].id },
-        }).catch(() => {}); // ekstra guvenlik agi, fonksiyon zaten no-throw
-      }
-
-      return reply.status(201).send({
-        success: true,
-        taskId: insertedTask[0].id,
-        taskNo: insertedTask[0].task_no,
-        // BUG-1: override ile gecilen cakisma varsa cagirana muhurlenmek uzere doner
-        conflict_metadata: conflictMetadata,
-      });
+      const result = await createBridgedTask(fastify, request.body);
+      if (result.firePush) result.firePush();
+      return reply.status(result.status).send(result.body);
     } catch (err) {
-      await client.query("ROLLBACK"); // En ufak hatada geri çekil, numaratör sırasını koru!
       fastify.log.error(
         err,
         "[BridgeTransactionCrashed] Core monolit bridge atomic query collapsed."
       );
-      return reply
-        .status(500)
-        .send({
-          error: "Internal Server Error",
-          message: "Atomic bridge synchronization collapsed.",
-        });
-    } finally {
-      client.release();
+      return reply.status(500).send({
+        error: "Internal Server Error",
+        message: "Atomic bridge synchronization collapsed.",
+      });
     }
   });
 
@@ -445,4 +487,5 @@ module.exports.sendPushNotification = sendPushNotification;
 module.exports.renderPushCopy = renderPushCopy;
 module.exports.resolvePushLanguage = resolvePushLanguage;
 module.exports.requestDelayReasonPush = requestDelayReasonPush;
+module.exports.createBridgedTask = createBridgedTask;
 

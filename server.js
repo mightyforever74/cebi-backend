@@ -565,8 +565,10 @@ fastify.register(require("./routes/weighbridge")); // Weighbridge Operations (Fa
 fastify.register(require("./routes/mobileTelemetry")); // Mobil Telemetri batch ingestion (ADR-CE-01/ADR-CE-02)
 
 // ── Dispatcher Faz A: Çekirdek Operasyon (tasks/drivers/vehicles/locations) ──
-// tulipfleet-enterprise-backend'ten porte edildi; VRP optimize/approve zinciri
-// kasıtlı olarak bu pasta DIŞINDA (bkz. routes/dispatcherTasks.js başlık yorumu).
+// tulipfleet-enterprise-backend'ten porte edildi. Faz A-2 (2026-10-19): VRP
+// optimize/poll/approve zinciri de artık routes/dispatcherTasks.js içinde —
+// bkz. o dosyanın başlık yorumu (ayrı bir route dosyası/register YOK, aynı
+// dosya/registration genişletildi).
 fastify.register(require("./routes/dispatcherDrivers"));
 fastify.register(require("./routes/dispatcherVehicles"));
 fastify.register(require("./routes/dispatcherLocations"));
