@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-10-19 (devam 19), Faz A-3: Gerçek HERE Tour Planning Entegrasyonu (kod seviyesinde, unit-wiring testiyle doğrulandı, henüz canlı HERE çağrısı yapılmadı)
+
+**Cem'in talimatı:** "İlerle, sonraki adıma geç."
+
+**Kapsam:** `vrpFactory.js`'in Faz A-2'de kasıtlı dışarıda bıraktığı `HereTourPlanningProvider` (gerçek HERE Tour Planning API) `tulipfleet-enterprise-backend/lib/routing/HereTourPlanningProvider.js` + `buildHereProblem.js` + `hydrateVehiclesForRouting.js`'ten port edildi. Kaynaktaki implementasyon canlıda doğrulanmış (fleet-enterprise-01 shell history, 14/15 Ekim), sıfırdan yazılmadı, birebir port.
+
+**Yazılan dosyalar:**
+- `lib/routing/hydrateVehiclesForRouting.js` (YENİ), saf port, şema uyumu kontrol edildi: `public.vehicles.cargo_capacity_volume_m3/cargo_capacity_weight_kg/hazmat_certified_classes` (migrations/1783400000000) ve `public.vehicles.esp32_device_id` + `public.locations(device_id, latitude, longitude, "time")` (routes/dispatcherLocations.js'in zaten çalışan sorgusuyla doğrulandı) cebi-backend'de birebir var.
+- `lib/routing/buildHereProblem.js` (YENİ), saf port, DB/side-effect yok.
+- `lib/routing/HereTourPlanningProvider.js` (YENİ), port, tek kasıtlı fark: axios yerine native `fetch` (cebi-backend'in kendi `services/routing/HereRoutingProvider.js`'i zaten "axios/node-fetch bağımlılığı yok" kararını vermiş, yeni bağımlılık eklenmedi). `_requestConfig`/`mapHereError`/`normalizeHereSolution`/dedup/hash mantığı davranışsal olarak değişmeden port edildi.
+- `lib/routing/vrpFactory.js` (DEĞİŞTİ), `case "here-tour"` eklendi.
+- `cebi.env.example` (DEĞİŞTİ), `VRP_PROVIDER=here-tour` artık port edilmiş olarak dokümante edildi.
+- `tests/hereTourPlanningProvider.test.js` (YENİ), `httpClient` enjekte edilerek submitVrp→pollVrp(inProgress→success)→fetchVrp zinciri, apikey query-param auth'u, HERE 400 hatasının throw etmeyip job'u 'failed' yaptığı, API key yoksa hiç istek atılmadığı doğrulandı. `npm test`: 3/3 yeni test geçti, repodaki 4 önceden-var-olan ilgisiz test hatası (companyBranding/publicTrack*) değişmeden kaldı (git stash ile izole edilip doğrulandı, bu portla ilgisi yok).
+
+**AÇIK RİSK (bloklayıcı olarak ele alınmadı, runtime bulgusu olarak bırakıldı):** Kaynaktaki HERE hesabının Tour Planning'e (Base Plan'ın "Optimization" kategorisi) erişimi doğrulanmıştı, ama cebi-backend'in KENDİ `HERE_API_KEY`'i için bu henüz canlıda test edilmedi. `VRP_PROVIDER=here-tour` set edilip gerçek bir istek atıldığında HERE 401/403 dönerse `submitVrp` bunu throw etmeden `status='failed'` + `error_message` olarak kaydeder (MockVrpProvider ile aynı "sessiz değil ama akışı durdurmayan" davranış), ayrıca bir ön-doğrulama/soru turu açılmadı, `.cursorrules`'un "NO RE-QUESTIONING" kuralına uygun.
+
+**Yapılmadı (kapsam dışı, kaynakta da yok):** `routes/dispatcherTasks.js`'e dokunulmadı, zaten provider-agnostic (`getVrpProvider(fastify.pg)`), `VRP_PROVIDER=here-tour` set etmek yeterli. Canlı `fleet-enterprise-01`'de gerçek bir HERE Tour Planning isteği HENÜZ atılmadı (ücretli dış servis, entitlement doğrulanmadan atılmadı).
+
+---
+
 ## 2026-10-19 (devam 18): Dokümantasyon standardı düzeltmesi (Cem), `.cursorrules`, konsolide bulgular
 
 **Hata:** Cem'in "Faz A-3'e mi geçelim" sorusuna cevaben ayrı bir dosya, `docs/STRATEJIK_MIMARI_ANALIZ_2026-10-19.md`, oluşturuldu. Cem reddetti: proje dokümantasyon standardı sadece `SESSION_NOTE.md` + `FORK_BASELINE.md` + ADR üçlüsü (`claude/tulipfleet-customer-edition-faz1-kesif-raporu.md` §8.1, §11.2'de zaten yazılı kural, `DEPLOYMENT_RUNBOOK.md` için aynı düzeltme 18 Ekimde yapılmıştı). Dosya silindi (bu commit). İçeriği ilgili yerlere taşındı:
