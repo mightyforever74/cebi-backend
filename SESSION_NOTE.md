@@ -26,6 +26,17 @@
 
 **Henüz yapılmadı:** `node -c` ile tüm değiştirilen/yeni dosyalar sentaks kontrolünden geçti (bu turda), ama canlıda (`fleet-enterprise-01`) henüz deploy/test edilmedi — bu, bir sonraki adım, önceki tüm özelliklerle (Weighbridge, Mobil Telemetri, Dispatcher Faz A/deploy) aynı desen: `git pull` + rebuild + commit'li e2e script çalıştırma, Cem'in sunucu erişimiyle.
 
+**GÜNCELLEME (aynı gün) — `fleet-enterprise-01`'de TAM DOĞRULANDI, 6/6 test BAŞARILI:**
+`git pull` + `docker compose up -d --build cebi-backend` + `scripts/dev/cebi_dispatcher_faza2_vrp_e2e_test.sh` çalıştırıldı:
+- **TEST 1** (rol gate): `driver` rolüyle optimize → `403 Forbidden`. ✓
+- **TEST 2** (optimize Run A): `202` + `jobId`. ✓
+- **TEST 3** (poll): state machine beklenen zamanlamayla ilerledi (`submitted`×2 → `running`×3 → `completed`, ~6s), `available_vehicles` hem V1 hem V2'yi içerdi — çapraz-şirket sızıntısı yok. ✓
+- **TEST 4** (approve Run A, V1'e manuel atama): `200`, `pushed:1`. DB'de `public.tasks` satırı doğru: `TLP-26-00001`, `vehicle_id`=V1, `status=assigned`, `scheduled_start=11:36:26`/`scheduled_end=12:02:13` (süre ~25dk47sn — **bu, `estimateDriveSeconds()`'ın haversine fallback'i DEĞİL, gerçek HERE Routing API v8 truck süresini kullandığını gösteriyor**, çünkü haversine @ 40km/h+%15 bu mesafe için ~5-6dk verirdi; `HERE_API_KEY` sunucuda konfigüre, `services/routing/factory.js` reuse'u canlıda da çalışıyor). ✓
+- **TEST 5** (Run B, V1 ile kasıtlı çakışan pencere, override YOK): `409` + `conflict_metadata: {conflicting_task_no:"TLP-26-00001", overlap_minutes:15}` — `createBridgedTask()`'ın in-process çakışma denetimi approve orkestratöründen doğru tetiklendi, draft B hiçbir satır oluşturmadan güvenle reddedildi (rollback). ✓
+- **TEST 6** (Run B, aynı çakışma, `override:true`): `200`, `pushed:1`, `overridden_conflicts` doğru döndü; DB'de `TLP-26-00002` oluştu VE `enterprise.routing_jobs.response_payload.conflict_override_reason` = `"FazA2 e2e test - kasitli override"` doğru yazıldı. ✓
+
+**Sonuç:** Faz A-2 (VRP Optimizasyon Portu) hem kod hem canlı doğrulama seviyesinde TAMAMLANDI. Tek-süreçli mimarinin sağladığı atomiklik kazanımı (dispatch_tasks güncellemesi + köprü INSERT'i aynı transaction'da) canlıda, gerçek bir çakışma/override senaryosuyla kanıtlandı — kaynak mimaride bu test edilemezdi (iki ayrı süreç/transaction). Hiçbir regresyon veya beklenmeyen davranış bulunmadı.
+
 ---
 
 ## 2026-10-19 (devam 16) — cebi-dispatcher canlı domain'inden uçtan uca doğrulama: CORS/JWT/dispatcher endpoint'leri
