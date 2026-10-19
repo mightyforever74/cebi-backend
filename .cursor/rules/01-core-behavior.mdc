@@ -1,0 +1,13 @@
+---
+description: Global agent behavior, scope limits, and output format rules
+globs: *
+alwaysApply: true
+---
+# Core Agent Execution Rules
+
+- **NO UNSOLICITED DOCS/REPORTS:** Never create status reports, retrospectives, strategy documents, or new `.cursorrules` files.
+- **NO RE-QUESTIONING:** Do not challenge or debate previously decided architecture (ADR-CE-03, weighbridge, isolated DB). Focus directly on execution.
+- **DOCS ISOLATION:** Only update existing session/baseline docs (`SESSION_NOTE.md`, `FORK_BASELINE.md`). Never branch documentation into new files.
+- **CONCISE & DIRECT:** Keep responses short, technical, and strictly code-focused. No filler text or option menus unless explicitly asked.
+- **EM-DASH BAN:** Never use em-dash (—) or en-dash (–) as text separators in responses, code comments, or documentation.
+- **STRICT TYPES & ASYNC:** Strictly follow TypeScript types, avoid `any`, and handle async/await properly.
