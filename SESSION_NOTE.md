@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-10-21 — Dispatcher panelinin ilk gerçek canlı testi: rol tasarımı doğrulandı, 3 eksik route tespit edildi, backlog açıldı
+
+**Bağlam:** `cebi-dispatcher.tulipfleet.com`'a Cem tarafından ilk kez gerçek tarayıcıdan giriş yapıldı (daha önce sadece curl ile uçtan uca doğrulanmıştı, §11.4/FORK_BASELINE). Tüm veri çeken sayfalarda 403 görüldü.
+
+**Kök neden (kod okunarak doğrulandı, bug DEĞİL):** `server.js:372-378` — `/api/dispatcher/*` route'larının tamamı `requireRole("company_admin", "super_admin")` ile korunuyor, `"dispatcher"` rolü **kasıtlı olarak** dışarıda (kaynak `tulipfleet-enterprise-backend`'in tüm dispatcher-panel route'larında aynı örüntü, yorum satırında belgeli). Yani `role='dispatcher'` olan bir kullanıcı Dispatcher panelini KULLANAMAZ — isim kafa karıştırıcı ama tasarım gereği böyle. Panel kullanıcıları `company_admin` (veya `super_admin`) rolünde olmalı. Test hesapları (`info@tulipfleet.com`, `dispatcher@cebi-test.local`, `tarti1@cebi-test.local`) `company_admin`'e çevrildi, `admin@cebi-test.local`/`superadmin@cebi-test.local` eklendi — hepsi düzeldi.
+
+**Gerçekten eksik olan 3 route (backend'de hiç yazılmamış, port edilmemiş — Faz 1 raporu §10.2'de zaten işaretliydi):**
+1. **Exception Management** (`/api/dispatcher/exceptions`, frontend: `src/hooks/useExceptions.ts`, 404) — **planlanacak.** DB zemini hazır: `enterprise.exception_events` hypertable'ı zaten kurulu (Faz 4). Kaynak mantık: enterprise backend'deki `routes/exceptions.js`/`routes/decisionLog.js`.
+2. **Cost & Toll Inspection** (backend'de "toll" geçen hiçbir route yok) — **planlanacak.** En büyük parça, muhtemelen sıfırdan tasarım gerekir (HGV toll/vrachtwagenheffing — `docs/functions/FEAT-008-vrachtwagenheffing-route-cost.md` referans alınabilir, `cebi-dispatcher` kaynak repo kopyası).
+3. **Subscription quota** (`/api/subscription/quota`, frontend çağırıyor, backend'de yok — ama neredeyse aynı veriyi dönen `/api/company/plan` zaten çalışıyor) — **Cem kararı: şimdilik aynen kalsın, kapsam dışı.**
+
+## 2026-10-21 — Demo görevi "cebi-01" (Gebze Liman → İstanbul) — hazırlanıyor
+
 ## 2026-10-19 (akşam, devam 22'nin düzeltmesi): "yesterdayDateString Europe/Istanbul bug fix" yanlış gerekçeliydi — canlı deploy'da bulundu, düzeltildi
 
 **Bağlam:** "devam 22" migration'ları canlıya uygulandıktan sonra, `cebi-backend` container'ı yeniden başlatıldığında loglarda reconciliation cron'unun `nextRunInMs` değeri incelendi — ~4 saat sonrasına (00:10 **UTC**, yani 03:10 İstanbul) kurulduğu görüldü, "devam 22"'de iddia edilen "Europe/Istanbul yerel saat 00:10" değil.
