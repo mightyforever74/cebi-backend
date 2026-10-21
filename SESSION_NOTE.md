@@ -15,6 +15,20 @@
 2. **Cost & Toll Inspection** (backend'de "toll" geçen hiçbir route yok) — **planlanacak.** En büyük parça, muhtemelen sıfırdan tasarım gerekir (HGV toll/vrachtwagenheffing — `docs/functions/FEAT-008-vrachtwagenheffing-route-cost.md` referans alınabilir, `cebi-dispatcher` kaynak repo kopyası).
 3. **Subscription quota** (`/api/subscription/quota`, frontend çağırıyor, backend'de yok — ama neredeyse aynı veriyi dönen `/api/company/plan` zaten çalışıyor) — **Cem kararı: şimdilik aynen kalsın, kapsam dışı.**
 
+## 2026-10-21 — KRİTİK BULGU: Live Fleet Tracking, mobil GPS'e (ADR-CE-02) hiç bağlanmamış
+
+**Bağlam:** `cebi-01` demo görevi dispatcher'ın Live Fleet Tracking haritasında hiç görünmedi (mobil app'te sürücü kabul etti, rota mobilde eksiksizdi) — araştırıldı.
+
+**Kök neden (kod okunarak doğrulandı):**
+- `routes/dispatcherLocations.js:80-94` (`GET /api/dispatcher/locations/latest`) — SADECE `public.locations` (eski ESP32 hypertable'ı) okuyor, `vehicles.esp32_device_id` ile eşleştiriyor.
+- `routes/mobileTelemetry.js:117-120` (`POST /api/driver/telemetry/batch`) — ayrı bir tabloya (`public.mobile_location_pings`, task_id/driver_id bazlı, `vehicle_id` kolonu bile yok) yazıyor.
+- `routes/dispatcherLocations.js:111-171` (`GET /api/dispatcher/routes/active`) — rota çizimi için `status='in_progress'` + `v.esp32_device_id IS NOT NULL` + `enterprise.dispatch_tasks` köprüsü (VRP optimize→approve akışı) şart koşuyor.
+
+**Sonuç:** Mobil GPS kullanan (ESP32'siz) hiçbir Cebi aracı/görevi, mevcut haliyle Dispatcher Live Fleet Tracking'de **asla** görünmez — ne canlı konum, ne rota çizgisi. ADR-CE-02'nin "canlıda doğrulandı" kaydı sadece telemetri alımını (veri `mobile_location_pings`'e düşüyor mu) kapsıyordu, dispatcher tarafının bunu tüketmesini değil — bu bağlantı hiç kurulmamış. Panelin temel işlevini (filo takibi) etkileyen gerçek bir boşluk, hızlı config/rol düzeltmesi değil.
+
+**Backlog'a eklendi, öncelik Cem'e kalmış iş kalemi — henüz başlanmadı:**
+`/api/dispatcher/locations/latest` ve `/api/dispatcher/routes/active`'in, `esp32_device_id`'si olmayan araçlar için `mobile_location_pings` + `tasks` (driver/task bazlı) üzerinden de veri okuyacak şekilde genişletilmesi gerekiyor — iki kaynağı (ESP32 + mobil) birleştiren bir UNION/fallback mantığı.
+
 ## 2026-10-21 — Demo görevi "cebi-01" (Gebze Liman → İstanbul) — hazırlanıyor
 
 ## 2026-10-19 (akşam, devam 22'nin düzeltmesi): "yesterdayDateString Europe/Istanbul bug fix" yanlış gerekçeliydi — canlı deploy'da bulundu, düzeltildi
