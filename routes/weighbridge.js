@@ -24,13 +24,11 @@
 // super_admin — driver tartım girişi yapamaz (fiziksel tartı işlemi sürücü
 // değil operatör/dispatcher tarafından yapılır).
 //
-// NOT — henüz YAPILMADI (bilerek, ayrı bir karar gerektirir):
-// Bu route'lar tartım kaydı oluşturur/okur ama "Completed" durumuna geçişi
-// ENGELLEMEZ. ADR-CE-04 §2-A'daki gate, routes/driver.js'deki görev/waypoint
-// tamamlama akışına (server.js içindeki updateWaypointStatusTx ve ilgili
-// endpoint'ler) ayrıca bağlanmalı — mevcut production akışını bozmamak için
-// bu, weighbridge_readings_current view'ı hazır olduktan sonra, görev
-// tamamlama kodunun tam akışı incelenerek ayrı bir adımda yapılmalı.
+// NOT: Bu route'lar tartım kaydı oluşturur/okur. ADR-CE-04 §2-A'daki
+// "Completed" gate'i AYRICA BURADA DEĞİL — server.js'deki "Complete Task"
+// endpoint'inde (public.weighbridge_readings_current sorgusu, bkz. yakl.
+// satır 5530+) uygulanmıştır; cebi_e2e_test.sh ile canlıda doğrulanmıştır
+// (bkz. scripts/dev/cebi_e2e_test.sh, SESSION_NOTE.md).
 // ============================================================
 
 'use strict';
