@@ -94,9 +94,41 @@ async function dispatcherLocationsRoutes(fastify) {
            ORDER BY l.device_id, l.time DESC`,
           [companyId]
         );
+
+        // Mobil GPS köprüsü (2026-10-21): ESP32'si olmayan (mobil telemetri
+        // kullanan, ADR-CE-02) araçlar için public.locations yerine
+        // public.mobile_location_pings'ten en son konum. v.esp32_device_id
+        // IS NULL ile iki kaynak birbirini dışlar (aynı araç iki kere
+        // gelmez). device_id olarak vehicle_id (UUID, esp32 id formatıyla
+        // asla çakışmaz) kullanılır — frontend konum/rota eşlemesini
+        // device_id üzerinden yaptığı için routes/active'teki mobil dal da
+        // AYNI device_id'yi üretmeli (bkz. aşağıdaki ikinci endpoint).
+        const mobileResult = await fastify.pg.query(
+          `SELECT DISTINCT ON (v.id)
+                  v.id::text AS device_id,
+                  v.plate_no,
+                  v.id AS vehicle_id,
+                  mp.latitude,
+                  mp.longitude,
+                  mp.speed,
+                  mp.heading,
+                  mp.recorded_at AS timestamp,
+                  v.emission_class,
+                  v.vehicle_category
+           FROM public.mobile_location_pings mp
+           JOIN public.tasks t ON t.id = mp.task_id
+           JOIN public.vehicles v ON v.id = t.vehicle_id
+           WHERE t.company_id = $1
+             AND v.esp32_device_id IS NULL
+             AND t.status IN ('accepted', 'assigned', 'in_progress')
+           ORDER BY v.id, mp.recorded_at DESC`,
+          [companyId]
+        );
+
+        const locations = [...result.rows, ...mobileResult.rows];
         return {
-          locations: result.rows,
-          count: result.rowCount,
+          locations,
+          count: locations.length,
         };
       } catch (err) {
         request.log.error({ err }, "Failed to fetch latest dispatcher locations");
@@ -135,8 +167,49 @@ async function dispatcherLocationsRoutes(fastify) {
              AND v.esp32_device_id IS NOT NULL`,
           [companyId]
         );
+
+        // Mobil GPS köprüsü (2026-10-21): VRP optimize→approve akışından
+        // GEÇMEMİŞ (enterprise_dispatch_task_id IS NULL — doğrudan oluşturulan
+        // veya mobil-öncelikli) görevler için rota, kaynağı
+        // enterprise.dispatch_tasks yerine kendi route_json'undan
+        // (DriverRouteMapScreen.js ile aynı sözleşme: {origin:{lat,lng},
+        // destination:{lat,lng}}) alınır. device_id = vehicle_id (UUID) —
+        // yukarıdaki locations/latest'in mobil dalıyla AYNI anahtar, frontend
+        // konum/rota eşlemesi device_id üzerinden yapıyor.
+        const mobileResult = await fastify.pg.query(
+          `SELECT t.vehicle_id::text AS device_id,
+                  t.task_no,
+                  t.route_json
+           FROM public.tasks t
+           JOIN public.vehicles v ON v.id = t.vehicle_id
+           WHERE t.company_id = $1
+             AND v.esp32_device_id IS NULL
+             AND t.status IN ('accepted', 'assigned', 'in_progress')
+             AND t.enterprise_dispatch_task_id IS NULL
+             AND t.route_json IS NOT NULL`,
+          [companyId]
+        );
+
+        const combinedRows = [
+          ...result.rows.map((row) => ({
+            device_id: row.device_id,
+            task_no: row.task_no,
+            pickup_location: row.pickup_location,
+            dropoff_location: row.dropoff_location,
+          })),
+          ...mobileResult.rows.map((row) => {
+            const rj = row.route_json || {};
+            return {
+              device_id: row.device_id,
+              task_no: row.task_no,
+              pickup_location: rj.origin || null,
+              dropoff_location: rj.destination || null,
+            };
+          }),
+        ];
+
         const routes = [];
-        for (const row of result.rows) {
+        for (const row of combinedRows) {
           const p = row.pickup_location || {};
           const dOff = row.dropoff_location || {};
           const pickup = { lat: Number(p.lat), lng: Number(p.lng) };

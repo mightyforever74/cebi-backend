@@ -26,8 +26,16 @@
 
 **Sonuç:** Mobil GPS kullanan (ESP32'siz) hiçbir Cebi aracı/görevi, mevcut haliyle Dispatcher Live Fleet Tracking'de **asla** görünmez — ne canlı konum, ne rota çizgisi. ADR-CE-02'nin "canlıda doğrulandı" kaydı sadece telemetri alımını (veri `mobile_location_pings`'e düşüyor mu) kapsıyordu, dispatcher tarafının bunu tüketmesini değil — bu bağlantı hiç kurulmamış. Panelin temel işlevini (filo takibi) etkileyen gerçek bir boşluk, hızlı config/rol düzeltmesi değil.
 
-**Backlog'a eklendi, öncelik Cem'e kalmış iş kalemi — henüz başlanmadı:**
-`/api/dispatcher/locations/latest` ve `/api/dispatcher/routes/active`'in, `esp32_device_id`'si olmayan araçlar için `mobile_location_pings` + `tasks` (driver/task bazlı) üzerinden de veri okuyacak şekilde genişletilmesi gerekiyor — iki kaynağı (ESP32 + mobil) birleştiren bir UNION/fallback mantığı.
+**Düzeltme uygulandı (aynı gün, takip eden işlem — bkz. aşağıdaki not):** `/api/dispatcher/locations/latest` ve `/api/dispatcher/routes/active` genişletildi, iki kaynağı (ESP32 + mobil) birleştiren bir ek sorgu eklendi.
+
+## 2026-10-21 — Live Fleet Tracking'e mobil GPS köprüsü eklendi (yukarıdaki bulgunun düzeltmesi)
+
+**Değişiklik:** `routes/dispatcherLocations.js`, her iki endpoint'e de `v.esp32_device_id IS NULL` olan araçlar için ikinci bir sorgu eklendi:
+- `locations/latest`: `public.mobile_location_pings` → `public.tasks` (`task_id`) → `public.vehicles` (`vehicle_id`) zinciriyle en son konum, `status IN ('accepted','assigned','in_progress')` olan görevler için. `device_id` olarak `vehicle_id` (UUID) kullanılır (ESP32 id formatıyla çakışmaz).
+- `routes/active`: `enterprise_dispatch_task_id IS NULL` olan (VRP köprüsünden geçmemiş) görevler için rota, `enterprise.dispatch_tasks` yerine görevin kendi `route_json.origin`/`route_json.destination`'ından alınır. Aynı `device_id` (vehicle_id) kullanılır ki frontend konum/rota eşlemesi kopmasın.
+- İki dal da `v.esp32_device_id IS NULL` ile simetrik — ESP32'li araçlar eski yoldan, mobil-GPS'li araçlar yeni yoldan, asla çakışmadan akar.
+
+**Doğrulanmadı — sıradaki adım:** Cem'in dispatcher panelini yeniden açıp `cebi-01`'in (vehicle TEST-34-CEBI, status muhtemelen `accepted`) artık Live Fleet Tracking haritasında göründüğünü teyit etmesi gerekiyor. `status IN (...)` listesi varsayımla seçildi (görev henüz `in_progress`'e geçmemiş olabilir) — gerçek durumla eşleşmiyorsa görev tablosundaki güncel `status` değeri kontrol edilmeli.
 
 ## 2026-10-21 — Demo görevi "cebi-01" (Gebze Liman → İstanbul) — hazırlanıyor
 
