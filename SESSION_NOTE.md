@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-10-21 — OLAY (küçük): `cebi-db` deploy sonrası `cebi_admin` şifre uyuşmazlığı, DB'ye dokunmadan düzeltildi
+
+**Bağlam:** Mobil GPS düzeltmesini deploy etmek için `docker compose -f docker-compose.cebi.yml up -d --build cebi-backend` çalıştırıldı, `cebi-db` de (bağımlılık olarak) yeniden oluştu. Sonrasında backend logları: `password authentication failed for user "cebi_admin"` — dispatcher "mock data" uyarısına düştü.
+
+**Kök neden:** `/opt/cebi/.env`'deki `CEBI_DB_PASSWORD` (compose'un kendi değişken ikamesi, hem `cebi-db`'nin `POSTGRES_PASSWORD`'üne hem `cebi-backend`'in `DATABASE_URL`'ine aynı kaynaktan gider) ile Postgres'in `cebi_pgdata` volume'ünde fiilen initdb anında set edilmiş şifre arasında drift oluşmuş — muhtemelen 19 Ekim'deki kurtarmadan sonra `.env` elle güncellenmiş ama DB'ye `ALTER USER` ile yansıtılmamış (tam olarak o olayın açık bırakılan takip maddesi, `FORK_BASELINE.md` satır 84'te işaretliydi).
+
+**Düzeltme (veriye DOKUNMADAN):** `docker exec -it cebi-db psql -U cebi_admin -d cebi_db` (local unix socket, trust auth — şifresiz bağlandı) → `ALTER USER cebi_admin WITH PASSWORD '...';` (.env'deki değerle eşitlendi) → `docker compose restart cebi-backend`. `/health` → `"database":"connected"`. Container recreate/veri kaybı YOK, sadece kimlik bilgisi senkronu.
+
+**Ders/takip:** Bu drift'in NEDEN oluştuğu (kim/ne zaman `.env`'i değiştirdi) araştırılmadı — tekrar olursa aynı yöntemle (yerel socket + `ALTER USER`) çözülebilir, veri riski yok.
+
 ## 2026-10-21 — Mobil GPS köprüsü düzeltmesi, 2. tur: ilk düzeltme fiilen çalışmıyordu (`esp32_device_id` NOT NULL çıktı)
 
 **Bağlam:** İlk düzeltme (bkz. altta "KRİTİK BULGU") deploy edildikten sonra `cebi-01` hâlâ Live Fleet Tracking'de görünmedi. `\d public.vehicles` ile doğrulandı: `esp32_device_id character varying(50) NOT NULL UNIQUE` — yani **her araç zorunlu bir değere sahip**, gerçek donanımı olmasa bile (`TEST-34-CEBI` aracında eski bir e2e test script'inden kalma `ESP32-CEBI-TEST-01`). İlk düzeltmedeki `v.esp32_device_id IS NULL` filtresi bu yüzden **hiçbir satırla asla eşleşmiyordu** — kontrol etmeden varsayım yapılmıştı (bu oturumun üçüncü halüsinasyonu, bkz. aşağıdaki deploy-komutu notu da).
