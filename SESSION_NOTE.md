@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-10-21 — `cebi-landing` fork'u oluşturuldu, Türkçe'ye çevrildi, canlıya alındı (`cebi.tulipfleet.com`)
+
+**Bağlam:** Cem, TulipFleet'in genel landing page'inden (`tulipfleet-landing`) Cebi'ye özel, white-label bir tanıtım sayfası istedi: NL/AB'ye özgü içerik kaldırılacak, Cebi'nin gerçek değer önerisi yazılacak, sadece Türkçe.
+
+**Yapılanlar:**
+- Yeni repo `mightyforever74/cebi-landing`, `tulipfleet-landing` @ `eb989972`'den fork edildi (`cebi-landing/FORK_BASELINE.md`).
+- 9 dilli `Dictionary`/i18n sistemi tamamen kaldırıldı — tek dil (TR), dil öneki yok, tüm içerik tek dosyada (`src/content/site.ts`).
+- NL/AB ZE-Zone & Vrachtwagenheffing içeriği, self-servis SaaS altyapısı (fiyatlandırma hesaplayıcı, kayıt/early-access formları, çerez onayı) kaldırıldı — Cebi tek-kiracılı/white-label olduğu için. Cem'in sonraki isteğiyle "Demo İsteyin" CTA'sı da (header/hero/footer + `#contact` bölümü) tamamen kaldırıldı — sayfa artık saf tanıtım, hiçbir dönüşüm/CTA akışı yok.
+- İçerik Cebi'nin gerçek değer önerisiyle yeniden yazıldı: geofence tabanlı liman/kantar doğrulama (ADR-CE-04), dispatcher otomasyonu + hatasız canlı kargo takibi, rota bazlı yevmiye. **Dürüstlük kontrolü:** yevmiye hesaplama özelliğinin bu repoda (`cebi-backend`) henüz kodlanmadığı `grep -ri "yevmiye\|per_diem"` ile doğrulandı — sayfada "live" değil "roadmap" (sırada) yazıldı.
+- Gerçek TulipFleet ürün ekran görüntüleri (marka karışıklığı riski — `public/screenshots/`) kullanılmadı, yerine özgün liman/gemi/kantar/geofence temalı SVG mockup çizildi.
+- **Dağıtım (bu repoyla ve `cebi-dispatcher`'la aynı ADR-CE-03 deseni — Cloudflare Pages değil, `fleet-enterprise-01`'in kendi Caddy'si):** `Dockerfile` + `docker/Caddyfile` + `docker-compose.cebi-landing.yml` eklendi, port `3102` (`cebi-backend` 3100 / `cebi-dispatcher` 3101'in devamı). Cem sunucuda `docker compose -f docker-compose.cebi-landing.yml up -d --build cebi-landing` ile deploy etti (17/17 adım, 13.3s, temiz). DNS: Cloudflare'de `cebi.tulipfleet.com` → `49.12.246.212` A kaydı (Proxied). Origin Certificate oluşturulup `/etc/caddy/origin/cebi-landing.{crt,key}` olarak sunucuya elle kopyalandı (izinler `cebi-dispatcher.{crt,key}` ile birebir eşleştirildi: `.crt` 644, `.key` 640, `root:caddy`). Host `/etc/caddy/Caddyfile`'a `cebi-dispatcher` bloğunun kopyası eklendi. Sonuç: `curl -I https://cebi.tulipfleet.com` → `200`, HSTS/güvenlik header'ları doğru, Cloudflare üzerinden.
+
+**Durum:** Uçtan uca canlı ve doğrulanmış. Detay: `cebi-landing/FORK_BASELINE.md`.
+
 ## 2026-10-21 — OLAY (küçük): `cebi-db` deploy sonrası `cebi_admin` şifre uyuşmazlığı, DB'ye dokunmadan düzeltildi
 
 **Bağlam:** Mobil GPS düzeltmesini deploy etmek için `docker compose -f docker-compose.cebi.yml up -d --build cebi-backend` çalıştırıldı, `cebi-db` de (bağımlılık olarak) yeniden oluştu. Sonrasında backend logları: `password authentication failed for user "cebi_admin"` — dispatcher "mock data" uyarısına düştü.
