@@ -76,59 +76,63 @@ async function dispatcherLocationsRoutes(fastify) {
         });
       }
       try {
+        // DÜZELTME (2026-10-21, aynı gün ikinci tur): ilk denemede
+        // `v.esp32_device_id IS NULL` ile iki kaynağı ayırmaya çalışmıştım,
+        // ama `\d public.vehicles` ile doğrulandı — bu kolon NOT NULL +
+        // UNIQUE (her araç, gerçek donanımı olmasa bile bir esp32_device_id
+        // değerine sahip olmak ZORUNDA, ör. `TEST-34-CEBI` aracında eski bir
+        // e2e test script'inden kalma `ESP32-CEBI-TEST-01`). Yani o filtre
+        // HİÇBİR satırla asla eşleşmiyordu — düzeltme fiilen çalışmıyordu.
+        //
+        // Doğru tasarım: araç bazında kaynak AYIRMAK yerine, her araç için
+        // iki kaynaktan (ESP32 `public.locations` / mobil
+        // `mobile_location_pings`) HANGİSİ DAHA GÜNCELSE onu göstermek.
+        // device_id: ESP32 kaynaklı satırlarda esp32_device_id string'i
+        // KORUNUR (useMqttTelemetry.ts canlı güncellemeleri AYNI anahtarla
+        // — gerçek cihazın MQTT topic'inden gelen device_id — eşleştiriyor,
+        // değiştirilirse canlı MQTT akışı REST snapshot'ıyla eşleşmez);
+        // mobil kaynaklı satırlarda device_id = vehicle_id (UUID) — MQTT
+        // ile hiç ilgisi olmayan, route_json tabanlı mobil görevler için
+        // routes/active'teki mobil dalla AYNI anahtar (bkz. aşağıda).
         const result = await fastify.pg.query(
-          `SELECT DISTINCT ON (l.device_id)
-                  l.device_id,
-                  v.plate_no,
-                  v.id AS vehicle_id,
-                  l.latitude,
-                  l.longitude,
-                  l.speed,
-                  l.heading,
-                  l.time AS timestamp,
-                  v.emission_class,
-                  v.vehicle_category
-           FROM public.locations l
-           JOIN public.vehicles v ON v.esp32_device_id = l.device_id
-           WHERE v.company_id = $1
-           ORDER BY l.device_id, l.time DESC`,
+          `WITH esp32_latest AS (
+             SELECT DISTINCT ON (v.id)
+                    v.id AS vehicle_id,
+                    l.device_id AS device_id,
+                    v.plate_no, v.emission_class, v.vehicle_category,
+                    l.latitude, l.longitude, l.speed, l.heading, l.time::timestamptz AS ts
+             FROM public.locations l
+             JOIN public.vehicles v ON v.esp32_device_id = l.device_id
+             WHERE v.company_id = $1
+             ORDER BY v.id, l.time DESC
+           ),
+           mobile_latest AS (
+             SELECT DISTINCT ON (v.id)
+                    v.id AS vehicle_id,
+                    v.id::text AS device_id,
+                    v.plate_no, v.emission_class, v.vehicle_category,
+                    mp.latitude, mp.longitude, mp.speed, mp.heading, mp.recorded_at AS ts
+             FROM public.mobile_location_pings mp
+             JOIN public.tasks t ON t.id = mp.task_id
+             JOIN public.vehicles v ON v.id = t.vehicle_id
+             WHERE t.company_id = $1
+             ORDER BY v.id, mp.recorded_at DESC
+           )
+           SELECT DISTINCT ON (vehicle_id)
+                  device_id, plate_no, vehicle_id, latitude, longitude,
+                  speed, heading, ts AS timestamp, emission_class, vehicle_category
+           FROM (
+             SELECT * FROM esp32_latest
+             UNION ALL
+             SELECT * FROM mobile_latest
+           ) combined
+           ORDER BY vehicle_id, ts DESC`,
           [companyId]
         );
 
-        // Mobil GPS köprüsü (2026-10-21): ESP32'si olmayan (mobil telemetri
-        // kullanan, ADR-CE-02) araçlar için public.locations yerine
-        // public.mobile_location_pings'ten en son konum. v.esp32_device_id
-        // IS NULL ile iki kaynak birbirini dışlar (aynı araç iki kere
-        // gelmez). device_id olarak vehicle_id (UUID, esp32 id formatıyla
-        // asla çakışmaz) kullanılır — frontend konum/rota eşlemesini
-        // device_id üzerinden yaptığı için routes/active'teki mobil dal da
-        // AYNI device_id'yi üretmeli (bkz. aşağıdaki ikinci endpoint).
-        const mobileResult = await fastify.pg.query(
-          `SELECT DISTINCT ON (v.id)
-                  v.id::text AS device_id,
-                  v.plate_no,
-                  v.id AS vehicle_id,
-                  mp.latitude,
-                  mp.longitude,
-                  mp.speed,
-                  mp.heading,
-                  mp.recorded_at AS timestamp,
-                  v.emission_class,
-                  v.vehicle_category
-           FROM public.mobile_location_pings mp
-           JOIN public.tasks t ON t.id = mp.task_id
-           JOIN public.vehicles v ON v.id = t.vehicle_id
-           WHERE t.company_id = $1
-             AND v.esp32_device_id IS NULL
-             AND t.status IN ('accepted', 'assigned', 'in_progress')
-           ORDER BY v.id, mp.recorded_at DESC`,
-          [companyId]
-        );
-
-        const locations = [...result.rows, ...mobileResult.rows];
         return {
-          locations,
-          count: locations.length,
+          locations: result.rows,
+          count: result.rowCount,
         };
       } catch (err) {
         request.log.error({ err }, "Failed to fetch latest dispatcher locations");
@@ -168,14 +172,16 @@ async function dispatcherLocationsRoutes(fastify) {
           [companyId]
         );
 
-        // Mobil GPS köprüsü (2026-10-21): VRP optimize→approve akışından
-        // GEÇMEMİŞ (enterprise_dispatch_task_id IS NULL — doğrudan oluşturulan
-        // veya mobil-öncelikli) görevler için rota, kaynağı
-        // enterprise.dispatch_tasks yerine kendi route_json'undan
-        // (DriverRouteMapScreen.js ile aynı sözleşme: {origin:{lat,lng},
-        // destination:{lat,lng}}) alınır. device_id = vehicle_id (UUID) —
-        // yukarıdaki locations/latest'in mobil dalıyla AYNI anahtar, frontend
-        // konum/rota eşlemesi device_id üzerinden yapıyor.
+        // Mobil GPS köprüsü (2026-10-21, düzeltme: `esp32_device_id IS NULL`
+        // koşulu kaldırıldı — kolon NOT NULL, hiçbir satırla eşleşmiyordu,
+        // bkz. yukarıdaki locations/latest'teki aynı düzeltmenin notu).
+        // Gerçek ayraç zaten `enterprise_dispatch_task_id IS NULL` — VRP
+        // optimize→approve akışından GEÇMEMİŞ (doğrudan oluşturulan veya
+        // mobil-öncelikli) görevler için rota, enterprise.dispatch_tasks
+        // yerine kendi route_json'undan (DriverRouteMapScreen.js ile aynı
+        // sözleşme: {origin:{lat,lng}, destination:{lat,lng}}) alınır.
+        // device_id = vehicle_id (UUID) — yukarıdaki locations/latest'in
+        // mobil kaynaklı satırlarıyla AYNI anahtar.
         const mobileResult = await fastify.pg.query(
           `SELECT t.vehicle_id::text AS device_id,
                   t.task_no,
@@ -183,7 +189,6 @@ async function dispatcherLocationsRoutes(fastify) {
            FROM public.tasks t
            JOIN public.vehicles v ON v.id = t.vehicle_id
            WHERE t.company_id = $1
-             AND v.esp32_device_id IS NULL
              AND t.status IN ('accepted', 'assigned', 'in_progress')
              AND t.enterprise_dispatch_task_id IS NULL
              AND t.route_json IS NOT NULL`,

@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-10-21 — Mobil GPS köprüsü düzeltmesi, 2. tur: ilk düzeltme fiilen çalışmıyordu (`esp32_device_id` NOT NULL çıktı)
+
+**Bağlam:** İlk düzeltme (bkz. altta "KRİTİK BULGU") deploy edildikten sonra `cebi-01` hâlâ Live Fleet Tracking'de görünmedi. `\d public.vehicles` ile doğrulandı: `esp32_device_id character varying(50) NOT NULL UNIQUE` — yani **her araç zorunlu bir değere sahip**, gerçek donanımı olmasa bile (`TEST-34-CEBI` aracında eski bir e2e test script'inden kalma `ESP32-CEBI-TEST-01`). İlk düzeltmedeki `v.esp32_device_id IS NULL` filtresi bu yüzden **hiçbir satırla asla eşleşmiyordu** — kontrol etmeden varsayım yapılmıştı (bu oturumun üçüncü halüsinasyonu, bkz. aşağıdaki deploy-komutu notu da).
+
+**Doğru düzeltme (`routes/dispatcherLocations.js`):**
+- `locations/latest`: araç bazında kaynak ayırmak yerine, iki kaynaktan (`public.locations` ESP32 / `public.mobile_location_pings` mobil) **hangisi daha güncelse onu** gösteren bir `UNION ALL` + `DISTINCT ON (vehicle_id) ORDER BY ts DESC` sorgusu. `device_id`: ESP32 kaynaklı satırlarda esp32 string'i korunur (`useMqttTelemetry.ts`'nin canlı güncellemeleri AYNI anahtarla geliyor, `fleet/device/+/location` MQTT topic'i), mobil kaynaklı satırlarda `vehicle_id` kullanılır.
+- `routes/active`: gereksiz/hatalı `v.esp32_device_id IS NULL` koşulu kaldırıldı — gerçek ayraç zaten `enterprise_dispatch_task_id IS NULL` idi, esp32 koşuluna hiç gerek yoktu.
+
+**Doğrulanmadı, bilinen eksik:** `cebi-01` için `mobile_location_pings` sayısı hâlâ 0 (sürücü rotayı "kabul etti" ama GPS ping'i hiç göndermedi — ADR-CE-01'e göre takip "sefer başlayınca" akar, kabul etmekle aynı eylem olmayabilir). Yani **rota çizgisi** artık görünmeli (route_json'a dayanıyor, ping gerektirmiyor) ama **araç konum noktası** sürücü gerçekten GPS göndermeye başlayana kadar görünmeyecek — bu ayrı bir mobil-tarafı doğrulama adımı.
+
 ## 2026-10-21 — Ders: deploy komutunu kontrol etmeden söyleme (halüsinasyon, Cem tarafından yakalandı)
 
 **Hata:** Live Fleet Tracking düzeltmesini (`routes/dispatcherLocations.js`) push ettikten sonra Cem'e sunucuda `cebi-backend` adında bir klasör olduğunu ve genel bir `docker compose up -d --build` komutuyla deploy edilebileceğini, DOĞRULAMADAN söyledim. Gerçek klasör adı `/opt/cebi` (bu dosyada ve `FORK_BASELINE.md`'de zaten defalarca geçiyor) — kontrol etmeden tahminle cevap verdim.
