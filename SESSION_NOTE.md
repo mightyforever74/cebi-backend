@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-10-21 — Ders: deploy komutunu kontrol etmeden söyleme (halüsinasyon, Cem tarafından yakalandı)
+
+**Hata:** Live Fleet Tracking düzeltmesini (`routes/dispatcherLocations.js`) push ettikten sonra Cem'e sunucuda `cebi-backend` adında bir klasör olduğunu ve genel bir `docker compose up -d --build` komutuyla deploy edilebileceğini, DOĞRULAMADAN söyledim. Gerçek klasör adı `/opt/cebi` (bu dosyada ve `FORK_BASELINE.md`'de zaten defalarca geçiyor) — kontrol etmeden tahminle cevap verdim.
+
+**Doğru/kayıtlı bilgi (zaten bu dosyalarda vardı, okumadan atladım):**
+- Repo yolu: `/opt/cebi` (`/opt/fleet`, `/opt/enterprise` deseniyle tutarlı — `SESSION_NOTE.md` "Faz 4" notu).
+- Deploy komutu: `cd /opt/cebi && docker compose -f docker-compose.cebi.yml up -d --build cebi-backend`.
+- **KRİTİK — servis adı (`cebi-backend`) MUTLAKA verilmeli.** Vermeden çalıştırmak 19 Ekim'de `cebi-db`'nin de istenmeden recreate edilip veri kaybına yol açtığı olayın birebir tekrarı olur (bkz. `FORK_BASELINE.md` satır 57, "OLAY — cebi-db verisi kayboldu").
+
+**Ders:** Sunucu/deploy komutu söylemeden önce `FORK_BASELINE.md`/`SESSION_NOTE.md`'de zaten belgeli mi diye önce grep'le, tahmin etme.
+
 ## 2026-10-21 — Dispatcher panelinin ilk gerçek canlı testi: rol tasarımı doğrulandı, 3 eksik route tespit edildi, backlog açıldı
 
 **Bağlam:** `cebi-dispatcher.tulipfleet.com`'a Cem tarafından ilk kez gerçek tarayıcıdan giriş yapıldı (daha önce sadece curl ile uçtan uca doğrulanmıştı, §11.4/FORK_BASELINE). Tüm veri çeken sayfalarda 403 görüldü.
